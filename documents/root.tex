@@ -1,0 +1,136 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%2345678901234567890123456789012345678901234567890123456789012345678901234567890
+%        1         2         3         4         5         6         7         8
+
+\documentclass[letterpaper, 10 pt, conference]{ieeeconf}  % Comment this line out if you need a4paper
+
+%\documentclass[a4paper, 10pt, conference]{ieeeconf}      % Use this line for a4 paper
+
+\IEEEoverridecommandlockouts                              % This command is only needed if 
+                                                          % you want to use the \thanks command
+
+\overrideIEEEmargins                                      % Needed to meet printer requirements.
+        % 匯入你的 .bib 檔名 (不需加 .bib 副檔名)
+%In case you encounter the following error:
+%Error 1010 The PDF file may be corrupt (unable to open PDF file) OR
+%Error 1000 An error occurred while parsing a contents stream. Unable to analyze the PDF file.
+%This is a known problem with pdfLaTeX conversion filter. The file cannot be opened with acrobat reader
+%Please use one of the alternatives below to circumvent this error by uncommenting one or the other
+%\pdfobjcompresslevel=0
+%\pdfminorversion=4
+
+% See the \addtolength command later in the file to balance the column lengths
+% on the last page of the document
+
+% The following packages can be found on http:\\www.ctan.org
+%\usepackage{graphics} % for pdf, bitmapped graphics files
+%\usepackage{epsfig} % for postscript graphics files
+%\usepackage{mathptmx} % assumes new font selection scheme installed
+%\usepackage{times} % assumes new font selection scheme installed
+%\usepackage{amsmath} % assumes amsmath package installed
+%\usepackage{amssymb}  % assumes amsmath package installed
+\usepackage{cite}
+\title{\LARGE \bf
+Physics-Informed Deep Stereo: Active Cross-Polarization 
+for Data-Efficient Transparent Obstacle Avoidance
+}
+
+
+\author{Lin. Po-Ting 
+\thanks{*This work was not supported by any organization}% <-this % stops a space
+\thanks{$^{1}$Albert Author is with Faculty of Electrical Engineering, Mathematics and Computer Science,
+        University of Twente, 7500 AE Enschede, The Netherlands
+        {\tt\small albert.author@papercept.net}}%
+\thanks{$^{2}$Bernard D. Researcheris with the Department of Electrical Engineering, Wright State University,
+        Dayton, OH 45435, USA
+        {\tt\small b.d.researcher@ieee.org}}%
+}
+
+
+\begin{document}
+
+
+
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{abstract}
+
+This electronic document is a ÒliveÓ template. The various components of your paper [title, text, heads, etc.] are already defined on the style sheet, as illustrated by the portions given in this document.
+
+\end{abstract}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{INTRODUCTION}
+
+Transparent obstacles are difficult to detect using traditional methods. Their characteristics, including light transmission, spectral reflection, and refraction distortion, pose significant challenges for detection.
+
+Traditional obstacle detection methods struggle with transparent obstacles. 
+LiDAR sensors fail due to light transmission through transparent surfaces 
+\cite{tibebu_lidar-based_2021}. RGB-D cameras produce incomplete depth maps with large missing regions due to spectral reflection 
+and refraction distortion \cite{lysenkov_recognition_2013}. Although optical transparency does not affect 
+ultrasonic sensors, they lack the spatial resolution and range required for dense 3D reconstruction in robotic navigation \cite{borenstein_vector_1991}.
+
+Recent learning-based methods have shown promise in addressing this challenge. 
+Depth completion approaches train neural networks to infer complete depth maps 
+from incomplete RGB-D inputs \cite{sajjan_clear_2020}.
+However, these methods are data-intensive and require tens of thousands of 
+synthetic training images to achieve satisfactory performance. Active stereo methods \cite{shi_asgrasp_2024} have been proposed to improve depth estimation 
+for transparent objects by leveraging structured light patterns. While these 
+approaches reduce the dependency on scene texture, they still require extensive 
+training data to handle the unique optical properties of transparent materials, 
+such as refraction and specular reflection.
+
+To address this limitation, we propose a physics-informed deep stereo 
+framework for data-efficient transparent obstacle detection. Our approach 
+leverages the physical principle that transparent objects produce highly 
+polarized specular reflections. By capturing stereo pairs at orthogonal 
+polarization angles (0° and 90°), the intensity difference reveals transparent 
+object boundaries with high contrast, independent of texture or ambient lighting. 
+This physics-based input representation enables fine-tuning of existing stereo 
+networks with minimal training data, eliminating the need for large-scale 
+specialized datasets.
+
+\section{RELATED WORK}
+
+\subsection{Hardware-Enhanced Approaches for Transparent Object Detection}
+Modern transparent object detection relies primarily on deep learning-based 
+visual models. A portion of recent research has focused on optimizing input 
+representations to improve data efficiency, enabling networks to learn from 
+fewer training samples by providing more informative inputs.
+
+Thermal imaging methods exploit the fact that transparent objects have 
+different thermal properties than their surroundings, making them visible 
+in infrared images regardless of optical transparency 
+\cite{huo_glass_2023}. However, thermal imaging 
+requires temperature differences between the object and background, limiting 
+its applicability in environments with uniform temperatures. Additionally, 
+thermal cameras are significantly more expensive than RGB cameras, hindering 
+widespread deployment in robotic systems.
+
+
+\subsection{Polarization-Based Vision}
+\subsection{Our Approach}
+
+\section{METHOD}
+\section{EXPERIMENTS}
+\section{RESULTS}
+\section{CONCLUSIONS}
+\section*{APPENDIX}
+\bibliographystyle{IEEEtran.bst}  % 指定使用 IEEE 標準格式
+\bibliography{IEEEfull.bib}
+
+
+
+
+
+
+
+
+
+
+\end{document}
