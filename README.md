@@ -65,7 +65,9 @@ git clone https://github.com/yourname/polar-stereo.git
 cd polar-stereo
 pip install -r requirements.txt
 
-📘 Usage
+---
+
+## 📘 Usage
 Training
 python train.py --config configs/polar.yaml
 
@@ -77,7 +79,9 @@ Data preparation
 Instructions for collecting cross-polarized stereo pairs are provided in
 docs/data_collection.md.
 
-📊 Dataset
+---
+
+## 📊 Dataset
 
 Our dataset includes:
 
@@ -92,7 +96,9 @@ Transparent object annotations
 Dataset download link (Google Drive / HuggingFace):
 👉 Coming soon after RA-L review.
 
-🔬 Citation
+---
+
+## 🔬 Citation
 
 If you use this repository, please cite the paper:
 
@@ -107,7 +113,9 @@ BibTeX
 
 (Replace with official RA-L citation once accepted.)
 
-📜 License
+---
+
+## 📜 License
 
 This project is released under the MIT License.
 
@@ -117,7 +125,9 @@ If you use this code or any derivative works in academic publications,
 products, or research, you must cite the paper above and attribute the
 original authorship.
 
-⭐ Acknowledgments
+---
+
+## ⭐ Acknowledgments
 
 This work was supported by:
 
@@ -125,7 +135,9 @@ Your institution
 
 Robotics community open-source contributors
 
-🤝 Contributions
+---
+
+## 🤝 Contributions
 
 Pull requests and issues are welcome.
 If you want to extend this project (e.g., add more networks or datasets),
