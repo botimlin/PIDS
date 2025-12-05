@@ -43,27 +43,17 @@ This repository includes:
 ---
 
 ## 🗂 Repository Structure
-📁 dataset/
-
-📁 calibration/
-
-📁 scripts/
-
-📁 models/
-
-📁 results/
-
-📁 paper/
-
-📄 train.py
-
-📄 evaluate.py
-
-📄 requirements.txt
-
-📄 LICENSE
-
-📄 README.md
+- 📁 dataset/
+- 📁 calibration/
+- 📁 scripts/
+- 📁 models/
+- 📁 results/
+- 📁 paper/
+- 📄 train.py
+- 📄 evaluate.py
+- 📄 requirements.txt
+- 📄 LICENSE
+- 📄 README.md
 
 
 ---
