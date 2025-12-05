@@ -64,7 +64,7 @@ This repository includes:
 git clone https://github.com/yourname/polar-stereo.git
 cd polar-stereo
 pip install -r requirements.txt
-
+```
 ---
 
 ## 📘 Usage
