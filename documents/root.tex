@@ -93,15 +93,37 @@ polarization angles (0° and 90°), the intensity difference reveals transparent
 object boundaries with high contrast, independent of texture or ambient lighting. 
 This physics-based input representation enables fine-tuning of existing stereo 
 networks with minimal training data, eliminating the need for large-scale 
-specialized datasets.
+specialized datasets.The key advantage of our approach is that it creates naturally discriminative 
+patterns where transparent boundaries are clearly visible, maximizing data 
+utilization efficiency—networks can learn robust features from significantly 
+fewer samples because the input representation is inherently informative 
+rather than ambiguous.
 
 \section{RELATED WORK}
 
-\subsection{Transparent Object Detection with Standard Sensors}
+\subsection{Transparent Object Detection with RGB-D Sensors}
 
+Standard RGB-D cameras fail to capture accurate depth for transparent objects 
+due to light transmission and refraction. Depth completion methods aim to 
+recover the corrupted depth structure caused by transparent objects through 
+deep learning. These approaches can be categorized into two main strategies. 
+The first, exemplified by Clear Grasp \cite{sajjan_clear_2020}, combines 
+learned predictions (surface normals, masks, occlusion boundaries) with 
+global optimization algorithms to reconstruct depth from over 50,000 synthetic 
+training images. The second strategy, adopted by TransCG \cite{fang_transcg_2022} 
+and ASGrasp \cite{shi_asgrasp_2024}, employs end-to-end networks that directly 
+output completed depth maps. The key distinction between TransCG and ASGrasp 
+lies in their input representation: TransCG retains the noisy depth map from 
+RGB-D sensors as input, while ASGrasp discards the unreliable depth measurements 
+entirely and directly utilizes RGB images paired with raw infrared (IR) stereo 
+images to reconstruct geometry. Despite these different strategies, all methods 
+remain data-intensive, requiring tens of thousands of training images to learn 
+the complex mappings from corrupted or incomplete inputs to accurate depth.
 
+\subsection{Deep Stereo Matching}
 
-\subsection{Polarization-Based Vision}
+\subsection{Polarization-Based Transparent Object Vision}
+
 \subsection{Our Approach}
 
 \section{METHOD}
