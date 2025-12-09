@@ -5,7 +5,7 @@ Physics-Informed Deep Stereo: Active Cross-Polarization  for Data-Efficient Tran
 This repository contains the official implementation, datasets, and supplementary materials for our paper:
 
 **Physics-Informed Deep Stereo: Active Cross-Polarization for Data-Efficient Transparent Obstacle Avoidance**  
-*Your Name et al., 2025*  
+*Po-Ting.Lin et al., 2025*  
 📄 **arXiv preprint:** https://arxiv.org/abs/XXXX.XXXXX  
 📌 RA-L submission
 
