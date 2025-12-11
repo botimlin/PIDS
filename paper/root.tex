@@ -17,6 +17,7 @@
 %\usepackage{amsmath} % assumes amsmath package installed
 %\usepackage{amssymb}  % assumes amsmath package installed
 \usepackage{cite}
+\usepackage{cleveref}
 \usepackage{graphicx}
 \title{\LARGE \bf
 Physics-Informed Deep Stereo: Active Cross-Polarization 
@@ -116,6 +117,12 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     \caption{System Optical Path Design Diagram-processed}
     \label{SOPDD-P}
 \end{figure}
+
+We leverage the polarization-selective filtering properties of linear polarizers to enhance the visibility of transparent objects at the image-formation level. A linear polarizer mounted in front of the active light source emits illumination with a fixed polarization state. When this light interacts with transparent or glossy surfaces, the specular reflection component becomes strongly polarized along a scene-dependent direction, whereas ambient and diffuse components remain largely unpolarized.
+
+To exploit this behaviour, we place an analyzer with an orientation orthogonal to the source-side polarizer in front of the imaging sensor. Under this crossed-polarization configuration, the specularly reflected component from transparent surfaces is significantly attenuated, while the unpolarized background and ambient illumination are only weakly affected. This produces a pronounced intensity difference between regions containing transparent-object reflections and the surrounding background, yielding a physically grounded “cut-out” effect that highlights transparent boundaries.
+
+As illustrated in \cref{SOPDD-P}, our implementation uses a structured-light projector with a source-side polarizer and a calibrated stereo camera pair, each equipped with an analyzer. The outgoing light is first polarized before interacting with the scene, and the returning light is filtered by the analyzers to generate high-contrast observations of transparent surfaces and their edges. These polarization-enhanced images are then fed into downstream stereo-matching networks, providing more informative inputs for data-efficient fine-tuning.
 
 \subsection{Cross-Polarization Input Construction}
 
