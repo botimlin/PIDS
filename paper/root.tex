@@ -9,20 +9,7 @@
 \IEEEoverridecommandlockouts                              % This command is only needed if 
                                                           % you want to use the \thanks command
 
-\overrideIEEEmargins                                      % Needed to meet printer requirements.
-        % 匯入你的 .bib 檔名 (不需加 .bib 副檔名)
-%In case you encounter the following error:
-%Error 1010 The PDF file may be corrupt (unable to open PDF file) OR
-%Error 1000 An error occurred while parsing a contents stream. Unable to analyze the PDF file.
-%This is a known problem with pdfLaTeX conversion filter. The file cannot be opened with acrobat reader
-%Please use one of the alternatives below to circumvent this error by uncommenting one or the other
-%\pdfobjcompresslevel=0
-%\pdfminorversion=4
-
-% See the \addtolength command later in the file to balance the column lengths
-% on the last page of the document
-
-% The following packages can be found on http:\\www.ctan.org
+\overrideIEEEmargins                                      % Needed to meet printer 
 %\usepackage{graphics} % for pdf, bitmapped graphics files
 %\usepackage{epsfig} % for postscript graphics files
 %\usepackage{mathptmx} % assumes new font selection scheme installed
@@ -30,6 +17,7 @@
 %\usepackage{amsmath} % assumes amsmath package installed
 %\usepackage{amssymb}  % assumes amsmath package installed
 \usepackage{cite}
+\usepackage{graphicx}
 \title{\LARGE \bf
 Physics-Informed Deep Stereo: Active Cross-Polarization 
 for Data-Efficient Transparent Obstacle Avoidance
@@ -116,8 +104,13 @@ the complex mappings from corrupted or incomplete inputs to accurate depth.
 
 Polarization imaging reveals the geometric properties of transparent surfaces by measuring the polarization state of reflected light (degree of polarization $\rho$ and angle of polarization $\phi$), providing physical constraints for 3D reconstruction. Cui et al. \cite{cui_polarimetric_2017} explored polarimetric multi-view stereo for 3D modeling in static environments, achieving high-quality reconstruction by resolving polarization ambiguities through graph optimization. However, their multi-view acquisition (6-36 views $\times$ 7 images per view) requires several minutes, rendering it impractical for real-time applications. Zhu \& Smith \cite{zhu_depth_2019} simplified the setup to a stereo pair configuration (one polarization camera and one RGB camera), jointly solving polarization and stereo constraints to obtain metrically accurate depth maps. While this extends the applicability to broader scenarios, it still necessitates sequential capture of multiple polarization angle images and second-level optimization. Kalra et al. \cite{kalra_deep_2020} introduced deep learning as an alternative to traditional geometric optimization, employing a monocular multi-polarization camera (simultaneous capture of 4 polarization angles) to achieve real-time segmentation at 20 FPS. However, this approach requires 20,000 labeled training samples and outputs only 2D masks without depth information. All these methods rely on passive illumination, limiting their performance in low-light conditions, and exhibit inherent trade-offs among data efficiency, real-time capability, and 3D perception.
 
-
 \section{METHOD}
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
+    \caption{System Optical Path Design Diagram-processed}
+    \label{SOPDD-P}
+\end{figure}
 \section{EXPERIMENTS}
 \section{RESULTS}
 \section{CONCLUSIONS}
