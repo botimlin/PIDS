@@ -107,28 +107,28 @@ Polarization imaging reveals the geometric properties of transparent surfaces by
 
 \section{METHOD}
 
-We present a physics-informed framework for transparent obstacle avoidance that integrates polarization cues into a standard stereo vision configuration. By exploiting polarization physics to generate high-contrast observations of transparent surfaces and their boundaries, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. This enables highly data-efficient fine-tuning of existing stereo networks, eliminating the need for complex multi-view rigs or large-scale task-specific training datasets.
+We present a physics-informed framework for transparent obstacle avoidance that integrates polarization cues into a standard stereo vision configuration. By exploiting polarization physics to generate high-contrast observations of transparent surfaces and their boundaries, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. Rather than designing a new architecture from scratch, we treat the stereo network as a reusable backbone and adapt it to the polarization-enhanced inputs via data-efficient fine-tuning. This eliminates the need for complex multi-view rigs or large-scale task-specific training datasets.
 
 \subsection{System Overview}
 
 \begin{figure}[h!]
     \centering
     \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
-    \caption{System Optical Path Design Diagram-processed}
+    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a cross-polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network.}
     \label{SOPDD-P}
 \end{figure}
 
-We leverage the polarization-selective filtering properties of linear polarizers to enhance the visibility of transparent objects at the image-formation level. A linear polarizer mounted in front of the active light source emits illumination with a fixed polarization state. When this light interacts with transparent or glossy surfaces, the specular reflection component becomes strongly polarized along a scene-dependent direction, whereas ambient and diffuse components remain largely unpolarized.
+We employ a physics-based optical design to effectively decouple transparent object geometries from complex specular noise at the image-formation level. Specifically, we leverage the polarization-selective properties of linear polarizers. A source-side polarizer ensures that the emitted illumination maintains a fixed polarization state. Upon interaction with transparent or glossy surfaces, the specular reflection component becomes strongly polarized, whereas ambient and diffuse components remain largely unpolarized.
 
-To exploit this behaviour, we place an analyzer with an orientation orthogonal to the source-side polarizer in front of the imaging sensor. Under this crossed-polarization configuration, the specularly reflected component from transparent surfaces is significantly attenuated, while the unpolarized background and ambient illumination are only weakly affected. This produces a pronounced intensity difference between regions containing transparent-object reflections and the surrounding background, yielding a physically grounded “cut-out” effect that highlights transparent boundaries.
+To exploit this physical behavior, we introduce an analyzer oriented orthogonally to the source polarizer in front of the imaging sensor. In this Cross-Polarization (CP) configuration, the strong specular noise from transparent surfaces is optically suppressed, while the unpolarized background remains visible. This mechanism effectively serves as a hardware-level attention mask, creating a physically grounded “cut-out” effect that accentuates object boundaries. Consequently, the complex inverse problem of transparency perception is simplified into a clearer representation that is easier for neural networks to interpret.
 
-As illustrated in \cref{SOPDD-P}, our implementation uses a structured-light projector with a source-side polarizer and a calibrated stereo camera pair, each equipped with an analyzer. The outgoing light is first polarized before interacting with the scene, and the returning light is filtered by the analyzers to generate high-contrast observations of transparent surfaces and their edges. These polarization-enhanced images are then fed into downstream stereo-matching networks, providing more informative inputs for data-efficient fine-tuning.
+As illustrated in \cref{SOPDD-P}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair equipped with analyzers. The outgoing light is pre-polarized, and the returning light is selectively filtered to yield high-contrast observations. Crucially, these polarization-enhanced images serve as a domain-agnostic input representation. By improving data quality at the source, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, without requiring specialized architectural modifications.
 
-\subsection{Cross-Polarization Input Construction}
+\subsection{Physics-Informed Input Formulation}
 
-\subsection{Stereo Network Integration}
+\subsection{Standardized Backbone Utilization}
 
-\subsection{Training Strategy}
+\subsection{Optimization and Generalization Objectives}
 
 \section{EXPERIMENTS}
 \section{RESULTS}
