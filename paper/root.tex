@@ -105,12 +105,24 @@ the complex mappings from corrupted or incomplete inputs to accurate depth.
 Polarization imaging reveals the geometric properties of transparent surfaces by measuring the polarization state of reflected light (degree of polarization $\rho$ and angle of polarization $\phi$), providing physical constraints for 3D reconstruction. Cui et al. \cite{cui_polarimetric_2017} explored polarimetric multi-view stereo for 3D modeling in static environments, achieving high-quality reconstruction by resolving polarization ambiguities through graph optimization. However, their multi-view acquisition (6-36 views $\times$ 7 images per view) requires several minutes, rendering it impractical for real-time applications. Zhu \& Smith \cite{zhu_depth_2019} simplified the setup to a stereo pair configuration (one polarization camera and one RGB camera), jointly solving polarization and stereo constraints to obtain metrically accurate depth maps. While this extends the applicability to broader scenarios, it still necessitates sequential capture of multiple polarization angle images and second-level optimization. Kalra et al. \cite{kalra_deep_2020} introduced deep learning as an alternative to traditional geometric optimization, employing a monocular multi-polarization camera (simultaneous capture of 4 polarization angles) to achieve real-time segmentation at 20 FPS. However, this approach requires 20,000 labeled training samples and outputs only 2D masks without depth information. All these methods rely on passive illumination, limiting their performance in low-light conditions, and exhibit inherent trade-offs among data efficiency, real-time capability, and 3D perception.
 
 \section{METHOD}
+
+We present a physics-informed framework for transparent obstacle avoidance that integrates polarization cues into a standard stereo vision configuration. By exploiting polarization physics to generate high-contrast observations of transparent surfaces and their boundaries, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. This enables highly data-efficient fine-tuning of existing stereo networks, eliminating the need for complex multi-view rigs or large-scale task-specific training datasets.
+
+\subsection{System Overview}
+
 \begin{figure}[h!]
     \centering
     \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
     \caption{System Optical Path Design Diagram-processed}
     \label{SOPDD-P}
 \end{figure}
+
+\subsection{Cross-Polarization Input Construction}
+
+\subsection{Stereo Network Integration}
+
+\subsection{Training Strategy}
+
 \section{EXPERIMENTS}
 \section{RESULTS}
 \section{CONCLUSIONS}
