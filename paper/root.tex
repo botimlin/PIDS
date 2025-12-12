@@ -20,7 +20,7 @@
 \usepackage{cleveref}
 \usepackage{graphicx}
 \title{\LARGE \bf
-Physics-Informed Deep Stereo: Active Cross-Polarization 
+Physics-Informed Deep Stereo: Active Asymmetric Polarization 
 for Data-Efficient Transparent Obstacle Avoidance
 }
 
@@ -90,7 +90,7 @@ We present a physics-informed framework for transparent obstacle avoidance that 
 \begin{figure}[h!]
     \centering
     \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
-    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a cross-polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network (generated using Ansys Zemax OpticStudio).}
+    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a Asymmetric Polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network (generated using Ansys Zemax OpticStudio).}
     \label{SOPDD-P}
 \end{figure}
 
@@ -127,25 +127,32 @@ In contrast, for the \textbf{Cross View}, the analyzer is orthogonal to the sour
 
 This formulation reveals the core mechanism of our approach. By subtracting \cref{eq:cross_view} from \cref{eq:parallel_view}, the discrepancy implies $I_{\parallel} - I_{\perp} \approx I_{s}(\mathbf{u})$. Consequently, for background regions (where $I_s \approx 0$), the two views exhibit photometric consistency ($I_{\parallel} \approx I_{\perp}$), ensuring the validity of standard stereo matching. However, for transparent surfaces, the localized intensity difference ($I_{\parallel} \gg I_{\perp}$) serves as a robust physical cue for the network to identify obstacles.
 
-
 \subsection{Standardized Backbone Utilization}
 
 To demonstrate the universality of our approach, we adopt a \textbf{model-agnostic strategy} that treats the stereo network as a generic correspondence engine.
 
-Our asymmetric acquisition setup produces inputs that maintain \textbf{structural compatibility} with standard RGB imagery while introducing a deliberate photometric discrepancy on transparent surfaces. Although this discrepancy violates the standard brightness constancy assumption locally (at the transparent object), the background regions remain photometrically consistent ($I_{\parallel} \approx I_{\perp}$). This property ensures that the global geometric context is preserved, allowing standard stereo pipelines to establish reliable correspondence. Crucially, the local intensity mismatch ($I_{\parallel} \neq I_{\perp}$) acts as a strong discriminative cue, which Convolutional Neural Networks (CNNs) can learn to associate with the presence of transparent obstacles without requiring architectural modifications.
-
-Consequently, our system can be directly integrated into general-purpose stereo models originally designed for opaque scenes. This approach maintains strong generalizability and facilitates efficient model transfer, as the network can leverage pre-trained features to adapt to the physics-informed domain rapidly.
+Our asymmetric acquisition setup produces inputs that maintain \textbf{structural compatibility} with standard RGB imagery while introducing a deliberate photometric discrepancy on transparent surfaces. Although this discrepancy violates the standard brightness constancy assumption locally, the background regions remain photometrically consistent ($I_{\parallel} \approx I_{\perp}$). This property ensures that the global geometric context is preserved, allowing standard stereo pipelines to establish reliable correspondence. Crucially, the local intensity mismatch ($I_{\parallel} \neq I_{\perp}$) acts as a strong discriminative cue, which Convolutional Neural Networks (CNNs) can learn to associate with the presence of transparent obstacles without requiring architectural modifications.
 
 \vspace{2mm}
-\noindent \textbf{Backbone Selection.} A stereo neural architecture is required to process our binocular inputs. We adopt a CNN-based stereo backbone (e.g., RAFT-Stereo or PSMNet) rather than Vision Transformers (ViTs). While ViTs offer long-range dependency modeling, they typically lack the inductive bias for locality and require massive datasets to converge. Given that our polarization-encoded inputs provide strong \textit{local} structural cues (edges and boundaries), a CNN architecture—with its inherent efficiency in extracting local features—offers a more data-efficient solution for our fine-tuning paradigm.
+\noindent \textbf{Backbone Selection.} A stereo neural architecture is required to process our binocular inputs. In this work, we specifically employ \textbf{RAFT-Stereo} \cite{lipson_raft-stereo_2021} as our primary backbone. Unlike traditional cost-volume approaches (e.g., PSMNet), RAFT-Stereo utilizes a recurrent architecture with Gated Recurrent Units (GRUs) to iteratively refine the disparity field.
 
-Formally, we abstract the network as a parameterized function $f_\theta$. Given the asymmetric input tensors $\mathbf{X}_{\parallel}$ (Parallel View) and $\mathbf{X}_{\perp}$ (Cross View), the predicted disparity map $\hat{\mathbf{D}}$ is obtained via:
+This choice is particularly strategic for our asymmetric setup. The iterative mechanism allows the network to progressively resolve the photometric discrepancy between the parallel and cross views: early iterations establish global context from the background consistency ($I_{\parallel} \approx I_{\perp}$), while later iterations refine the object boundaries using the high-frequency structural cues provided by our polarization inputs. Furthermore, as a CNN-based architecture, it retains the inductive bias for locality, making it highly data-efficient for our fine-tuning paradigm compared to Transformer-based alternatives. Formally, the network inference is defined as:
 \begin{equation}
     \hat{\mathbf{D}} = f_\theta(\mathbf{X}_{\parallel}, \mathbf{X}_{\perp})
 \end{equation}
-By fixing the backbone structure, we ensure that performance gains are strictly attributable to our physics-informed data strategy.
 
-\subsection{Optimization and Generalization Objectives}
+\vspace{2mm}
+\noindent \textbf{Optimization Protocol.} To achieve the claimed data efficiency, we formulate the training as a transfer learning problem. Instead of random initialization, we initialize the network parameters $\theta_{init}$ with weights $\theta_{pre}$ pre-trained on a large-scale opaque dataset (e.g., Scene Flow):
+\begin{equation}
+    \theta_{init} \leftarrow \theta_{pre}
+\end{equation}
+The optimization objective is then to find the optimal parameters $\theta^*$ that minimize the task-specific loss $\mathcal{L}_{task}$ on our small-scale transparent dataset $\mathcal{D}_{trans}$:
+\begin{equation}
+    \theta^* = \mathop{\arg\min}_{\theta} \mathcal{L}_{task}(\mathcal{D}_{trans}; \theta_{init})
+\end{equation}
+Since our physics-informed inputs structurally align with the source domain of $\theta_{pre}$, the optimization starts from a favorable basin of attraction, requiring significantly fewer iterations to converge than training from scratch.
+
+\subsection{Loss Function and Robustness Strategy}
 
 \section{EXPERIMENTS}
 \section{RESULTS}
