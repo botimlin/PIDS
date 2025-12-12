@@ -1,8 +1,8 @@
-# Physics-Informed Deep Stereo: Active Cross-Polarization for Data-Efficient Transparent Obstacle Avoidance
+# Physics-Informed Deep Stereo: Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Avoidance
 
 This repository contains the official implementation, datasets, and supplementary materials for our paper:
 
-**Physics-Informed Deep Stereo: Active Cross-Polarization for Data-Efficient Transparent Obstacle Avoidance**  
+**Physics-Informed Deep Stereo: Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Avoidance**  
 *Po-Ting.Lin et al., 2025*  
 📄 **arXiv preprint:** https://arxiv.org/abs/XXXX.XXXXX  
 📌 RA-L submission
@@ -23,7 +23,7 @@ We propose a **physics-informed deep stereo framework** that captures **cross-po
 This repository includes:
 
 ✔ Dataset  
-✔ Cross-polarization stereo capture pipeline  
+✔ Asymmetric Polarization stereo capture pipeline  
 ✔ Training code  
 ✔ Evaluation scripts  
 ✔ Reproducible experiments
@@ -32,7 +32,7 @@ This repository includes:
 
 ## 🚀 Features
 
-- **Active cross-polarization stereo capture**
+- **Active Asymmetric Polarization stereo capture**
 - **Minimal data learning** (tens of samples instead of tens of thousands)
 - **Plug-and-play input representation** compatible with all stereo networks
 - **High-performance detection under complex lighting**
@@ -102,7 +102,7 @@ If you use this repository, please cite the paper:
 
 BibTeX
 @article{your_arxiv_2025,
-  title={Physics-Informed Deep Stereo: Active Cross-Polarization for Data-Efficient Transparent Obstacle Avoidance},
+  title={Physics-Informed Deep Stereo: Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Avoidance},
   author={Your Name and Others},
   journal={arXiv preprint arXiv:XXXX.XXXXX},
   year={2025}
