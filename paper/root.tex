@@ -48,37 +48,13 @@ for Data-Efficient Transparent Obstacle Avoidance
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{INTRODUCTION}
 
-Transparent obstacles are difficult to detect using traditional methods. Their characteristics, including light transmission, spectral reflection, and refraction distortion, pose significant challenges for detection.
+Transparent obstacles represent a fundamental challenge for autonomous navigation and robotic manipulation. Their unique optical characteristics—specifically light transmission, specular reflection, and refraction distortion—render them effectively invisible or geometrically ambiguous to traditional sensing modalities.
 
-Traditional obstacle detection methods struggle with transparent obstacles. 
-LiDAR sensors fail due to light transmission through transparent surfaces 
-\cite{tibebu_lidar-based_2021}. RGB-D cameras produce incomplete depth maps with large missing regions due to spectral reflection 
-and refraction distortion \cite{lysenkov_recognition_2013}. Although optical transparency does not affect 
-ultrasonic sensors, they lack the spatial resolution and range required for dense 3D reconstruction in robotic navigation \cite{borenstein_vector_1991}.
+Standard obstacle detection methods struggle significantly in this domain. LiDAR sensors fail as emitted pulses transmit through transparent surfaces rather than reflecting back \cite{tibebu_lidar-based_2021}. Conventional RGB-D cameras produce incomplete depth maps with large missing regions (holes) due to strong specular reflections and lack of texture \cite{lysenkov_recognition_2013}. Although ultrasonic sensors are unaffected by optical transparency, they lack the spatial resolution and directional precision required for dense 3D reconstruction \cite{borenstein_vector_1991}.
 
-Recent learning-based methods have shown promise in addressing this challenge. 
-Depth completion approaches train neural networks to infer complete depth maps 
-from incomplete RGB-D inputs \cite{sajjan_clear_2020}.
-However, these methods are data-intensive and require tens of thousands of 
-synthetic training images to achieve satisfactory performance. Active stereo methods \cite{shi_asgrasp_2024} have been proposed to improve depth estimation 
-for transparent objects by leveraging structured light patterns. While these 
-approaches reduce the dependency on scene texture, they still require extensive 
-training data to handle the unique optical properties of transparent materials, 
-such as refraction and specular reflection.
+Recent learning-based methods have shown promise in addressing these limitations. Depth completion approaches train neural networks to infer complete depth maps from corrupted RGB-D inputs \cite{sajjan_clear_2020}. However, these methods are data-intensive, typically requiring tens of thousands of synthetic training images to learn the complex mapping from sparse depth to dense geometry. Active stereo methods \cite{shi_asgrasp_2024} leverage structured light patterns to mitigate textureless issues. While these approaches reduce dependency on scene texture, they remain vulnerable to the complex light transport (e.g., strong specular highlights) inherent to transparent materials, still necessitating extensive training data to generalize.
 
-To address this limitation, we propose a physics-informed deep stereo 
-framework for data-efficient transparent obstacle detection. Our approach 
-leverages the physical principle that transparent objects produce highly 
-polarized specular reflections. By capturing stereo pairs at orthogonal 
-polarization angles (0° and 90°), the intensity difference reveals transparent 
-object boundaries with high contrast, independent of texture or ambient lighting. 
-This physics-based input representation enables fine-tuning of existing stereo 
-networks with minimal training data, eliminating the need for large-scale 
-specialized datasets.The key advantage of our approach is that it creates naturally discriminative 
-patterns where transparent boundaries are clearly visible, maximizing data 
-utilization efficiency—networks can learn robust features from significantly 
-fewer samples because the input representation is inherently informative 
-rather than ambiguous.
+To address these limitations, we propose a \textbf{Physics-Informed Deep Stereo (PIDS)} framework for data-efficient transparent obstacle detection. Unlike symmetric stereo setups, our approach leverages an \textbf{active asymmetric polarization} configuration. We configure one camera to capture the parallel polarization state (preserving specular highlights) and the other to capture the orthogonal state (suppressing highlights). This setup creates a selective \textbf{photometric discrepancy}: background regions remain consistent across views, enabling reliable stereo matching, while transparent objects exhibit significant intensity differences. This physics-based input representation effectively converts the transparency detection problem into a discrepancy learning task. Consequently, our method enables existing stereo backbones to adapt to transparent scenes via \textbf{data-efficient fine-tuning}, eliminating the need for large-scale specialized datasets or complex architectural modifications.
 
 \section{RELATED WORK}
 
@@ -107,7 +83,7 @@ Polarization imaging reveals the geometric properties of transparent surfaces by
 
 \section{METHOD}
 
-We present a physics-informed framework for transparent obstacle avoidance that integrates polarization cues into a standard stereo vision configuration. By exploiting polarization physics to generate high-contrast observations of transparent surfaces and their boundaries, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. Rather than designing a new architecture from scratch, we treat the stereo network as a reusable backbone and adapt it to the polarization-enhanced inputs via data-efficient fine-tuning. This eliminates the need for complex multi-view rigs or large-scale task-specific training datasets.
+We present a physics-informed framework for transparent obstacle avoidance that integrates asymmetric polarization cues into a standard stereo vision configuration. By exploiting the differential polarization response of surfaces to generate physically discriminative cues, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. Rather than designing a new architecture from scratch, we treat the stereo network as a reusable backbone and adapt it to the polarization-encoded inputs via data-efficient fine-tuning. This eliminates the need for complex multi-view rigs or large-scale task-specific training datasets.
 
 \subsection{System Overview}
 
@@ -118,29 +94,56 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     \label{SOPDD-P}
 \end{figure}
 
-We employ a physics-based optical design to effectively decouple transparent object geometries from complex specular noise at the image-formation level. Specifically, we leverage the polarization-selective properties of linear polarizers. A source-side polarizer ensures that the emitted illumination maintains a fixed polarization state. Upon interaction with transparent or glossy surfaces, the specular reflection component becomes strongly polarized, whereas ambient and diffuse components remain largely unpolarized.
+We employ a physics-based asymmetric optical design to effectively decouple transparent object geometries from complex specular noise at the image-formation level. Specifically, we leverage the polarization-selective properties of linear polarizers. A source-side polarizer ensures that the emitted illumination maintains a fixed polarization state ($0^\circ$). Upon interaction with transparent or glossy surfaces, the specular reflection component becomes strongly polarized, whereas ambient and diffuse components remain largely unpolarized.
 
-To exploit this physical behavior, we introduce an analyzer oriented orthogonally to the source polarizer in front of the imaging sensor. In this Cross-Polarization (CP) configuration, the strong specular noise from transparent surfaces is optically suppressed, while the unpolarized background remains visible. This mechanism effectively serves as a hardware-level attention mask, creating a physically grounded “cut-out” effect that accentuates object boundaries. Consequently, the complex inverse problem of transparency perception is simplified into a clearer representation that is easier for neural networks to interpret.
+To exploit this physical behavior, we construct a hybrid stereo configuration. Unlike traditional setups that use identical filters for both views, we introduce an asymmetric filtering scheme: one camera is equipped with an analyzer parallel to the source ($0^\circ$, Parallel View), while the other is equipped with an analyzer orthogonal to the source ($90^\circ$, Cross View).
 
-As illustrated in \cref{SOPDD-P}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair equipped with analyzers. The outgoing light is pre-polarized, and the returning light is selectively filtered to yield high-contrast observations. Crucially, these polarization-enhanced images serve as a domain-agnostic input representation. By improving data quality at the source, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, without requiring specialized architectural modifications.
+This configuration creates a selective photometric discrepancy. For unpolarized background regions, both cameras capture similar intensities due to diffuse reflection, allowing standard stereo matching algorithms to function correctly. However, for transparent surfaces, the Parallel View captures strong specular highlights, while the Cross View optically suppresses them. This mechanism effectively serves as a hardware-encoded attention signal: the difference between the left and right views explicitly highlights the transparent regions. Consequently, the complex inverse problem of transparency perception is simplified into a differential representation that is easier for neural networks to interpret.
+
+As illustrated in \cref{SOPDD-P}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair with distinct polarization states. The outgoing light is pre-polarized, and the returning light is differentially filtered. Crucially, these asymmetric polarization-encoded images serve as a domain-agnostic input representation. By embedding material properties directly into the stereo pair, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, utilizing the discrepancy cues to localize transparent obstacles.
 
 \subsection{Physics-Informed Input Formulation}
 
-We decompose the illumination effects in real-world imaging into several components that contribute to the intensity observed at each pixel. Let $I(\mathbf{u})$ denote the measured image intensity at pixel location $\mathbf{u}$ This value can be attributed to three primary factors: diffuse reflection, specular reflection, and background illumination. The overall intensity at any spatial location is therefore governed by the combination of these three components.
+We decompose the illumination effects in real-world imaging into several components. Let $I(\mathbf{u})$ denote the measured image intensity at pixel location $\mathbf{u}$. This value is modeled as the linear superposition of three primary factors: diffuse reflection, specular reflection, and background illumination:
 \begin{equation}
-I(\mathbf{u}) = I_{d}(\mathbf{u}) + I_{s}(\mathbf{u}) + I_{b}(\mathbf{u})
+    I(\mathbf{u}) = I_{d}(\mathbf{u}) + I_{s}(\mathbf{u}) + I_{b}(\mathbf{u})
 \end{equation}
-To reduce the contribution of the specular reflection term in the image formation model, we introduce a pair of linear polarizing filters. According to Malus’ law, the intensity of the polarized specular component after filtering, $I_{s}^{filtered}$ ,follows $I_{s}^{filtered}\propto \cos^2\theta$ , where $\theta$ denotes the relative orientation between the polarizer and the analyzer. The specular component is maximized at $\theta=0^\circ$ and decays quadratically as the angle increases. By configuring the analyzer to be nearly orthogonal to the source-side polarizer, the specular term is strongly attenuated; in particular, at $\theta=90^\circ$ , it approaches zero because crossed polarizers effectively eliminate the polarized reflection:
+
+To encode material properties into the stereo pair, we exploit the polarization-dependent nature of the specular term $I_s$. According to Malus's law, the intensity of the polarized specular component after filtering varies as $I_{s}^{filtered} \propto \cos^2\theta$, where $\theta$ is the relative angle between the source polarization and the analyzer.
+
+Our asymmetric setup deliberately creates a photometric discrepancy by configuring the stereo cameras with distinct polarization states: a \textbf{Parallel View} ($I_{\parallel}$, $\theta=0^\circ$) and a \textbf{Cross View} ($I_{\perp}$, $\theta=90^\circ$).
+
+For the \textbf{Parallel View}, the specular component is maximized. Assuming the unpolarized components ($I_d$ and $I_b$) are attenuated by a factor $\alpha$ (transmission coefficient, typically $\approx 0.5$) due to the polarizer, the formulation is:
 \begin{equation}
-I_{s}^{filtered} \approx I_{s} \cdot \cos^2(90^\circ)\approx 0
+    I_{\parallel}(\mathbf{u}) \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u})) + I_{s}(\mathbf{u})
+    \label{eq:parallel_view}
 \end{equation}
-Since the diffuse reflection $I_d$ and background illumination $I_b$ are largely unpolarized, they are transmitted through the analyzer with a constant attenuation factor $\alpha$ (typically $\alpha \approx 0.5$ for ideal polarizers). Consequently, the final captured image $I^{CP}$ can be formulated as:
+
+In contrast, for the \textbf{Cross View}, the analyzer is orthogonal to the source. The polarized specular reflection is effectively eliminated ($I_s \cdot \cos^2(90^\circ) \approx 0$), while the unpolarized components undergo the same attenuation $\alpha$:
 \begin{equation}
-I^{CP} \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u}))
+    I_{\perp}(\mathbf{u}) \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u}))
+    \label{eq:cross_view}
 \end{equation}
-This selective suppression significantly reduces the specular contribution while leaving the diffuse and background components largely unaffected, thereby enhancing boundary contrast and providing more discriminative cues for downstream learning.
+
+This formulation reveals the core mechanism of our approach. By subtracting \cref{eq:cross_view} from \cref{eq:parallel_view}, the discrepancy implies $I_{\parallel} - I_{\perp} \approx I_{s}(\mathbf{u})$. Consequently, for background regions (where $I_s \approx 0$), the two views exhibit photometric consistency ($I_{\parallel} \approx I_{\perp}$), ensuring the validity of standard stereo matching. However, for transparent surfaces, the localized intensity difference ($I_{\parallel} \gg I_{\perp}$) serves as a robust physical cue for the network to identify obstacles.
+
 
 \subsection{Standardized Backbone Utilization}
+
+To demonstrate the universality of our approach, we adopt a \textbf{model-agnostic strategy} that treats the stereo network as a generic correspondence engine.
+
+Our asymmetric acquisition setup produces inputs that maintain \textbf{structural compatibility} with standard RGB imagery while introducing a deliberate photometric discrepancy on transparent surfaces. Although this discrepancy violates the standard brightness constancy assumption locally (at the transparent object), the background regions remain photometrically consistent ($I_{\parallel} \approx I_{\perp}$). This property ensures that the global geometric context is preserved, allowing standard stereo pipelines to establish reliable correspondence. Crucially, the local intensity mismatch ($I_{\parallel} \neq I_{\perp}$) acts as a strong discriminative cue, which Convolutional Neural Networks (CNNs) can learn to associate with the presence of transparent obstacles without requiring architectural modifications.
+
+Consequently, our system can be directly integrated into general-purpose stereo models originally designed for opaque scenes. This approach maintains strong generalizability and facilitates efficient model transfer, as the network can leverage pre-trained features to adapt to the physics-informed domain rapidly.
+
+\vspace{2mm}
+\noindent \textbf{Backbone Selection.} A stereo neural architecture is required to process our binocular inputs. We adopt a CNN-based stereo backbone (e.g., RAFT-Stereo or PSMNet) rather than Vision Transformers (ViTs). While ViTs offer long-range dependency modeling, they typically lack the inductive bias for locality and require massive datasets to converge. Given that our polarization-encoded inputs provide strong \textit{local} structural cues (edges and boundaries), a CNN architecture—with its inherent efficiency in extracting local features—offers a more data-efficient solution for our fine-tuning paradigm.
+
+Formally, we abstract the network as a parameterized function $f_\theta$. Given the asymmetric input tensors $\mathbf{X}_{\parallel}$ (Parallel View) and $\mathbf{X}_{\perp}$ (Cross View), the predicted disparity map $\hat{\mathbf{D}}$ is obtained via:
+\begin{equation}
+    \hat{\mathbf{D}} = f_\theta(\mathbf{X}_{\parallel}, \mathbf{X}_{\perp})
+\end{equation}
+By fixing the backbone structure, we ensure that performance gains are strictly attributable to our physics-informed data strategy.
 
 \subsection{Optimization and Generalization Objectives}
 
