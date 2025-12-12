@@ -25,7 +25,7 @@ for Data-Efficient Transparent Obstacle Avoidance
 }
 
 
-\author{Lin. Po-Ting 
+\author{Po-Ting .Lin 
 }
 
 
@@ -114,7 +114,7 @@ We present a physics-informed framework for transparent obstacle avoidance that 
 \begin{figure}[h!]
     \centering
     \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
-    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a cross-polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network.}
+    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a cross-polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network (generated using Ansys Zemax OpticStudio).}
     \label{SOPDD-P}
 \end{figure}
 
@@ -125,6 +125,20 @@ To exploit this physical behavior, we introduce an analyzer oriented orthogonall
 As illustrated in \cref{SOPDD-P}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair equipped with analyzers. The outgoing light is pre-polarized, and the returning light is selectively filtered to yield high-contrast observations. Crucially, these polarization-enhanced images serve as a domain-agnostic input representation. By improving data quality at the source, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, without requiring specialized architectural modifications.
 
 \subsection{Physics-Informed Input Formulation}
+
+We decompose the illumination effects in real-world imaging into several components that contribute to the intensity observed at each pixel. Let $I(\mathbf{u})$ denote the measured image intensity at pixel location $\mathbf{u}$ This value can be attributed to three primary factors: diffuse reflection, specular reflection, and background illumination. The overall intensity at any spatial location is therefore governed by the combination of these three components.
+\begin{equation}
+I(\mathbf{u}) = I_{d}(\mathbf{u}) + I_{s}(\mathbf{u}) + I_{b}(\mathbf{u})
+\end{equation}
+To reduce the contribution of the specular reflection term in the image formation model, we introduce a pair of linear polarizing filters. According to Malus’ law, the intensity of the polarized specular component after filtering, $I_{s}^{filtered}$ ,follows $I_{s}^{filtered}\propto \cos^2\theta$ , where $\theta$ denotes the relative orientation between the polarizer and the analyzer. The specular component is maximized at $\theta=0^\circ$ and decays quadratically as the angle increases. By configuring the analyzer to be nearly orthogonal to the source-side polarizer, the specular term is strongly attenuated; in particular, at $\theta=90^\circ$ , it approaches zero because crossed polarizers effectively eliminate the polarized reflection:
+\begin{equation}
+I_{s}^{filtered} \approx I_{s} \cdot \cos^2(90^\circ)\approx 0
+\end{equation}
+Since the diffuse reflection $I_d$ and background illumination $I_b$ are largely unpolarized, they are transmitted through the analyzer with a constant attenuation factor $\alpha$ (typically $\alpha \approx 0.5$ for ideal polarizers). Consequently, the final captured image $I^{CP}$ can be formulated as:
+\begin{equation}
+I^{CP} \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u}))
+\end{equation}
+This selective suppression significantly reduces the specular contribution while leaving the diffuse and background components largely unaffected, thereby enhancing boundary contrast and providing more discriminative cues for downstream learning.
 
 \subsection{Standardized Backbone Utilization}
 
