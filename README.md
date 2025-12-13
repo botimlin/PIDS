@@ -55,6 +55,52 @@ This repository includes:
 
 
 ---
+## 🛠️ Reproduction Guide
+
+This repository provides two modes for reproducing our PIDS framework:
+1. **☁️ Cloud Mode (Google Colab):** For quick demonstration without a local GPU.
+2. **⚡ LAN Mode (Local Server):** High-performance setup for real-time avoidance (as described in the paper).
+
+### 🔧 Hardware Setup
+The PIDS framework relies on a specific Active Asymmetric Polarization setup. Unlike standard stereo vision, we require a polarized light source and polarization filters on the cameras.1. Bill of Materials (BOM)
+Here is the exact hardware configuration used in our experiments:
+ComponentSpecification / ModelQtyNotesCompute (Robot)Raspberry Pi 5 (8GB)1Pi 4B is compatible but lower FPS.CameraRaspberry Pi Global Shutter Camera2Based on Sony IMX296 sensor. Essential for moving platforms.Lens6mm or 16mm CS-Mount Lens2Ensure both lenses are identical.PolarizerLinear Polarization Film/Filter3High extinction ratio recommended.Light SourceHigh-intensity LED / Flashlight1Must be mounted near the cameras.Compute (Server)NVIDIA GPU (Tesla P4 / RTX 3060+)1For running RAFT-Stereo (min 4GB VRAM).
+
+---
+
+### 🚀 Mode 1: Quick Start (Google Colab)
+The easiest way to test the inference pipeline using free cloud GPUs (Tesla T4).
+
+1.  **Open the Notebook:**
+    [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](LINK_TO_YOUR_NOTEBOOK)
+2.  **Start the Server:** Run the cells to install dependencies and start the `ngrok` tunnel. Copy the generated public URL (e.g., `https://xxxx.ngrok-free.app`).
+3.  **Run the Client (Pi 5):**
+    ```bash
+    # On your Raspberry Pi
+    python robot_client.py --mode cloud --url "YOUR_NGROK_URL"
+    ```
+
+---
+
+### ⚡ Mode 2: Local LAN Setup (Low Latency)
+Recommended for real-time experiments (<100ms latency).
+
+#### 1. Server Side (PC/Workstation)
+```bash
+# Clone the repository
+git clone [https://github.com/your-username/PIDS.git](https://github.com/your-username/PIDS.git)
+cd PIDS
+
+# Create environment
+conda create -n pids python=3.8
+conda activate pids
+pip install -r requirements.txt
+
+# Download Pre-trained Models
+bash scripts/download_models.sh
+
+# Start the Inference Server
+python server_local.py --port 8000
 
 ## 📦 Installation
 
