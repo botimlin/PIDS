@@ -17,8 +17,12 @@
 %\usepackage{amsmath} % assumes amsmath package installed
 %\usepackage{amssymb}  % assumes amsmath package installed
 \usepackage{cite}
+\usepackage{tikz}
+\usepackage{tikz-3dplot}
+\usetikzlibrary{arrows.meta, calc, fadings, decorations.markings, shapes.geometric}
 \usepackage{cleveref}
 \usepackage{graphicx}
+\usepackage{etoolbox}
 \title{\LARGE \bf
 Physics-Informed Deep Stereo: Active Asymmetric Polarization 
 for Data-Efficient Transparent Obstacle Avoidance
@@ -54,7 +58,7 @@ Standard obstacle detection methods struggle significantly in this domain. LiDAR
 
 Recent learning-based methods have shown promise in addressing these limitations. Depth completion approaches train neural networks to infer complete depth maps from corrupted RGB-D inputs \cite{sajjan_clear_2020}. However, these methods are data-intensive, typically requiring tens of thousands of synthetic training images to learn the complex mapping from sparse depth to dense geometry. Active stereo methods \cite{shi_asgrasp_2024} leverage structured light patterns to mitigate textureless issues. While these approaches reduce dependency on scene texture, they remain vulnerable to the complex light transport (e.g., strong specular highlights) inherent to transparent materials, still necessitating extensive training data to generalize.
 
-To address these limitations, we propose a \textbf{Physics-Informed Deep Stereo (PIDS)} framework for data-efficient transparent obstacle detection. Unlike symmetric stereo setups, our approach leverages an \textbf{active asymmetric polarization} configuration. We configure one camera to capture the parallel polarization state (preserving specular highlights) and the other to capture the orthogonal state (suppressing highlights). This setup creates a selective \textbf{photometric discrepancy}: background regions remain consistent across views, enabling reliable stereo matching, while transparent objects exhibit significant intensity differences. This physics-based input representation effectively converts the transparency detection problem into a discrepancy learning task. Consequently, our method enables existing stereo backbones to adapt to transparent scenes via \textbf{data-efficient fine-tuning}, eliminating the need for large-scale specialized datasets or complex architectural modifications.
+To address these limitations, we propose a Physics-Informed Deep Stereo (PIDS) framework for data-efficient transparent obstacle detection. Unlike symmetric stereo setups, our approach leverages an active asymmetric polarization configuration. We configure one camera to capture the parallel polarization state (preserving specular highlights) and the other to capture the orthogonal state (suppressing highlights). This setup creates a selective photometric discrepancy: background regions remain consistent across views, enabling reliable stereo matching, while transparent objects exhibit significant intensity differences. This physics-based input representation effectively converts the transparency detection problem into a discrepancy learning task. Consequently, our method enables existing stereo backbones to adapt to transparent scenes via data-efficient fine-tuning, eliminating the need for large-scale specialized datasets or complex architectural modifications.
 
 \section{RELATED WORK}
 
@@ -86,12 +90,154 @@ Polarization imaging reveals the geometric properties of transparent surfaces by
 We present a physics-informed framework for transparent obstacle avoidance that integrates asymmetric polarization cues into a standard stereo vision configuration. By exploiting the differential polarization response of surfaces to generate physically discriminative cues, the system preserves the geometric advantages of stereo while providing more informative inputs for learning. Rather than designing a new architecture from scratch, we treat the stereo network as a reusable backbone and adapt it to the polarization-encoded inputs via data-efficient fine-tuning. This eliminates the need for complex multi-view rigs or large-scale task-specific training datasets.
 
 \subsection{System Overview}
-
-\begin{figure}[h!]
+\begin{figure}[htbp]
     \centering
-    \includegraphics[width=1\linewidth]{paper//Figures/System Optical Path Design Diagram-processed.png}
-    \caption{\textbf{Schematic of the Optical Path Design.} The system utilizes a Asymmetric Polarization setup where the analyzer is orthogonal to the source polarizer. This configuration optically filters specular highlights, enhancing the visibility of transparent boundaries for the downstream stereo matching network (generated using Ansys Zemax OpticStudio).}
-    \label{SOPDD-P}
+    \begin{tikzpicture}[
+        scale=0.55,
+        transform shape,
+        >=Stealth,
+        polarizer/.style={fill=blue!30,draw=blue!60,opacity=0.7},
+        detector/.style={fill=gray!40,draw=gray!70,thick},
+        object/.style={fill=cyan!30,draw=cyan!60,opacity=0.5},
+    ]
+
+    % ===== Light Source =====
+    \begin{scope}[shift={(0,0)}]
+        % Optical axis
+        \draw[thick,->,gray] (-0.5,0) -- (2.5,0);
+        
+        % Multiple sine waves for unpolarized light
+        \foreach \angle/\col in {0/red,45/orange,90/green!70!black,135/cyan}{
+            \draw[\col,thick,samples=100,domain=0:2] 
+                plot (\x, {0.3*sin(\x*360)*cos(\angle)+0.3*cos(\x*360)*sin(\angle)*0.3});
+        }
+        
+        % Label
+        \node[above] at (0,1.2) {Light Source};
+        
+        % Cross-section (multi-directional arrows)
+        \begin{scope}[shift={(-0.3,0)},canvas is yz plane at x=0,scale=2.0]
+            \draw[thick] (0,0) circle (0.4);
+            \draw[thick,->,red] (0,0) -- (0.35,0);
+            \draw[thick,->,red] (0,0) -- (-0.35,0);
+            \draw[thick,->,orange] (0,0) -- (0.247,0.247);
+            \draw[thick,->,orange] (0,0) -- (-0.247,-0.247);
+            \draw[thick,->,green!70!black] (0,0) -- (0,0.35);
+            \draw[thick,->,green!70!black] (0,0) -- (0,-0.35);
+            \draw[thick,->,cyan] (0,0) -- (-0.247,0.247);
+            \draw[thick,->,cyan] (0,0) -- (0.247,-0.247);
+        \end{scope}
+    \end{scope}
+
+    % ===== First Polarizer (0 deg) =====
+    \begin{scope}[shift={(3,-0.15)}]
+        \fill[polarizer] (-0.1,-1) rectangle (0.1,1);
+        \foreach \y in {-0.8,-0.6,...,0.8}{
+            \draw[blue!60,thin] (-0.1,\y) -- (0.1,\y);
+        }
+        \node[above] at (0,1.2) {Polarizer ($0^\circ$)};
+    \end{scope}
+
+    % ===== 0 deg Linearly Polarized Light going to object =====
+    \begin{scope}[shift={(3.5,0)}]
+        \draw[thick,->,gray] (0,0) -- (3.3,0);
+        
+        \draw[red,thick,samples=100,domain=0:3] 
+            plot (\x, {0.4*sin(\x*360)});
+    \end{scope}
+
+    % ===== Transparent Object (light blue) =====
+    \begin{scope}[shift={(7.2,0)}]
+        \fill[object,rounded corners=2pt] (-0.15,-1.2) rectangle (0.15,1.2);
+        \draw[cyan!60,thick,rounded corners=2pt] (-0.15,-1.2) rectangle (0.15,1.2);
+        \node[right] at (0.3,1.0) {Transparent Object};
+        
+        % Reflection/refraction point
+        \fill[yellow] (0,0) circle (0.1);
+    \end{scope}
+
+    % ===== Reflected light going back and splitting =====
+    
+    % ----- Upper path: reflected light -> Analyzer 0 deg -> Camera A -----
+    % Reflected ray going up-left
+    \begin{scope}[shift={(7.1,0)}]
+        \draw[thick,->,gray] (0,0) -- (-3,2.2);
+        
+        \draw[red,thick,samples=50,domain=0:2.8] 
+            plot ({-(\x)*cos(36.25)},{(\x)*sin(36.25)+0.35*sin(\x*400)*cos(36.25)});
+    \end{scope}
+
+    % Upper analyzer (0 deg) - perpendicular to light path
+    \begin{scope}[shift={(4.5,2.2)},rotate=-53.75]
+        \fill[polarizer] (-0.1,-0.6) rectangle (0.1,0.6);
+        \foreach \y in {-0.4,-0.2,0,0.2,0.4}{
+            \draw[blue!60,thin] (-0.1,\y) -- (0.1,\y);
+        }
+    \end{scope}
+    \node[above] at (4.5,3.0) {Analyzer ($0^\circ$)};
+
+    % Light passing through to Camera A (continuing same direction)
+    \begin{scope}[shift={(3.9,2.35)}]
+        \draw[thick,->,gray] (0,0) -- (-1.8,1.32);
+        \draw[red,thick,samples=40,domain=0:1.6] 
+            plot ({-(\x)*cos(36.25)},{(\x)*sin(36.25)+0.3*sin(\x*400)*cos(36.25)});
+    \end{scope}
+
+    % Camera A (perpendicular to light path)
+    \begin{scope}[shift={(1.9,3.8)},rotate=-53.75]
+        \fill[detector] (-0.15,-0.5) rectangle (0.15,0.5);
+    \end{scope}
+    \node[above] at (1.9,4.5) {Camera A};
+
+    % ----- Lower path: reflected light -> Analyzer 90 deg -> Camera B -----
+    % Reflected ray going down-left
+    \begin{scope}[shift={(7.1,0)}]
+        \draw[thick,->,gray] (0,0) -- (-3,-2.2);
+        
+        \draw[red,thick,samples=50,domain=0:2.8] 
+            plot ({-(\x)*cos(36.25)},{-(\x)*sin(36.25)+0.35*sin(\x*400)*cos(36.25)});
+    \end{scope}
+
+    % Lower analyzer (90 deg) - perpendicular to light path
+    \begin{scope}[shift={(4.5,-2.2)},rotate=53.75]
+        \fill[polarizer] (-0.1,-0.6) rectangle (0.1,0.6);
+        \foreach \x in {-0.05,0,0.05}{
+            \draw[blue!60,thin] (\x,-0.6) -- (\x,0.6);
+        }
+    \end{scope}
+    \node[below] at (4.5,-3.0) {Analyzer ($90^\circ$)};
+
+    % Blocked light (dashed line, continuing same direction)
+    \begin{scope}[shift={(3.9,-2.35)}]
+        \draw[thick,->,gray,dashed] (0,0) -- (-1.8,-1.32);
+    \end{scope}
+
+    % Camera B (perpendicular to light path)
+    \begin{scope}[shift={(1.9,-3.8)},rotate=53.75]
+        \fill[detector] (-0.15,-0.5) rectangle (0.15,0.5);
+    \end{scope}
+    \node[below] at (1.9,-4.5) {Camera B};
+
+    % ===== Transmitted light path (passing through transparent object) =====
+    \begin{scope}[shift={(7.5,0)}]
+        \draw[thick,->,gray] (0,0) -- (3,0);
+        
+        \draw[red,thick,samples=100,domain=0:2.7] 
+            plot (\x, {0.4*sin(\x*360)});
+    \end{scope}
+
+    % Transmitted light label or detector (optional)
+    \begin{scope}[shift={(10.8,0)}]
+        \draw[thick,->] (0.2,0) -- (0.8,0);
+        \node[right] at (0.9,0) {Transmitted};
+    \end{scope}
+
+    % ===== Optical axis =====
+    \draw[gray,dashed,thin] (-1,0) -- (7,0);
+
+    \end{tikzpicture}
+    \caption{Conceptual illustration of the active asymmetric polarization stereo system. The light source is pre-polarized at 0°. Two cameras positioned as a stereo pair are equipped with orthogonal analyzers: Camera A with 0° (parallel to source) and Camera B with 90° (orthogonal to source). This asymmetry creates a photometric discrepancy at transparent boundaries while maintaining consistency on opaque surfaces.}
+    \label{fig:polarization}
 \end{figure}
 
 We employ a physics-based asymmetric optical design to effectively decouple transparent object geometries from complex specular noise at the image-formation level. Specifically, we leverage the polarization-selective properties of linear polarizers. A source-side polarizer ensures that the emitted illumination maintains a fixed polarization state ($0^\circ$). Upon interaction with transparent or glossy surfaces, the specular reflection component becomes strongly polarized, whereas ambient and diffuse components remain largely unpolarized.
@@ -100,7 +246,7 @@ To exploit this physical behavior, we construct a hybrid stereo configuration. U
 
 This configuration creates a selective photometric discrepancy. For unpolarized background regions, both cameras capture similar intensities due to diffuse reflection, allowing standard stereo matching algorithms to function correctly. However, for transparent surfaces, the Parallel View captures strong specular highlights, while the Cross View optically suppresses them. This mechanism effectively serves as a hardware-encoded attention signal: the difference between the left and right views explicitly highlights the transparent regions. Consequently, the complex inverse problem of transparency perception is simplified into a differential representation that is easier for neural networks to interpret.
 
-As illustrated in \cref{SOPDD-P}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair with distinct polarization states. The outgoing light is pre-polarized, and the returning light is differentially filtered. Crucially, these asymmetric polarization-encoded images serve as a domain-agnostic input representation. By embedding material properties directly into the stereo pair, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, utilizing the discrepancy cues to localize transparent obstacles.
+As illustrated in \cref{fig:polarization}, our system integrates a structured-light projector with a source-side polarizer and a calibrated stereo camera pair with distinct polarization states. The outgoing light is pre-polarized, and the returning light is differentially filtered. Crucially, these asymmetric polarization-encoded images serve as a domain-agnostic input representation. By embedding material properties directly into the stereo pair, we ensure that downstream stereo-matching networks can achieve high performance through data-efficient fine-tuning, utilizing the discrepancy cues to localize transparent obstacles.
 
 \subsection{Physics-Informed Input Formulation}
 
@@ -108,41 +254,35 @@ We decompose the illumination effects in real-world imaging into several compone
 \begin{equation}
     I(\mathbf{u}) = I_{d}(\mathbf{u}) + I_{s}(\mathbf{u}) + I_{b}(\mathbf{u})
 \end{equation}
-
 To encode material properties into the stereo pair, we exploit the polarization-dependent nature of the specular term $I_s$. According to Malus's law, the intensity of the polarized specular component after filtering varies as $I_{s}^{filtered} \propto \cos^2\theta$, where $\theta$ is the relative angle between the source polarization and the analyzer.
 
-Our asymmetric setup deliberately creates a photometric discrepancy by configuring the stereo cameras with distinct polarization states: a \textbf{Parallel View} ($I_{\parallel}$, $\theta=0^\circ$) and a \textbf{Cross View} ($I_{\perp}$, $\theta=90^\circ$).
+Our asymmetric setup deliberately creates a photometric discrepancy by configuring the stereo cameras with distinct polarization states: a Parallel View ($I_{\parallel}$, $\theta=0^\circ$) and a Cross View ($I_{\perp}$, $\theta=90^\circ$).
 
-For the \textbf{Parallel View}, the specular component is maximized. Assuming the unpolarized components ($I_d$ and $I_b$) are attenuated by a factor $\alpha$ (transmission coefficient, typically $\approx 0.5$) due to the polarizer, the formulation is:
+For the Parallel View, the specular component is maximized. Assuming the unpolarized components ($I_d$ and $I_b$) are attenuated by a factor $\alpha$ (transmission coefficient, typically $\approx 0.5$) due to the polarizer, the formulation is:
 \begin{equation}
     I_{\parallel}(\mathbf{u}) \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u})) + I_{s}(\mathbf{u})
     \label{eq:parallel_view}
 \end{equation}
-
-In contrast, for the \textbf{Cross View}, the analyzer is orthogonal to the source. The polarized specular reflection is effectively eliminated ($I_s \cdot \cos^2(90^\circ) \approx 0$), while the unpolarized components undergo the same attenuation $\alpha$:
+In contrast, for the Cross View, the analyzer is orthogonal to the source. The polarized specular reflection is effectively eliminated ($I_s \cdot \cos^2(90^\circ) \approx 0$), while the unpolarized components undergo the same attenuation $\alpha$:
 \begin{equation}
     I_{\perp}(\mathbf{u}) \approx \alpha \cdot (I_{d}(\mathbf{u}) + I_{b}(\mathbf{u}))
     \label{eq:cross_view}
 \end{equation}
-
 This formulation reveals the core mechanism of our approach. By subtracting \cref{eq:cross_view} from \cref{eq:parallel_view}, the discrepancy implies $I_{\parallel} - I_{\perp} \approx I_{s}(\mathbf{u})$. Consequently, for background regions (where $I_s \approx 0$), the two views exhibit photometric consistency ($I_{\parallel} \approx I_{\perp}$), ensuring the validity of standard stereo matching. However, for transparent surfaces, the localized intensity difference ($I_{\parallel} \gg I_{\perp}$) serves as a robust physical cue for the network to identify obstacles.
 
 \subsection{Standardized Backbone Utilization}
 
-To demonstrate the universality of our approach, we adopt a \textbf{model-agnostic strategy} that treats the stereo network as a generic correspondence engine.
+To demonstrate the universality of our approach, we adopt a model-agnostic strategy that treats the stereo network as a generic correspondence engine.
 
-Our asymmetric acquisition setup produces inputs that maintain \textbf{structural compatibility} with standard RGB imagery while introducing a deliberate photometric discrepancy on transparent surfaces. Although this discrepancy violates the standard brightness constancy assumption locally, the background regions remain photometrically consistent ($I_{\parallel} \approx I_{\perp}$). This property ensures that the global geometric context is preserved, allowing standard stereo pipelines to establish reliable correspondence. Crucially, the local intensity mismatch ($I_{\parallel} \neq I_{\perp}$) acts as a strong discriminative cue, which Convolutional Neural Networks (CNNs) can learn to associate with the presence of transparent obstacles without requiring architectural modifications.
+Our asymmetric acquisition setup produces inputs that maintain structural compatibility with standard RGB imagery while introducing a deliberate photometric discrepancy on transparent surfaces. Although this discrepancy violates the standard brightness constancy assumption locally, the background regions remain photometrically consistent ($I_{\parallel} \approx I_{\perp}$). This property ensures that the global geometric context is preserved, allowing standard stereo pipelines to establish reliable correspondence. Crucially, the local intensity mismatch ($I_{\parallel} \neq I_{\perp}$) acts as a strong discriminative cue, which Convolutional Neural Networks (CNNs) can learn to associate with the presence of transparent obstacles without requiring architectural modifications.
 
-\vspace{2mm}
-\noindent \textbf{Backbone Selection.} A stereo neural architecture is required to process our binocular inputs. In this work, we specifically employ \textbf{RAFT-Stereo} \cite{lipson_raft-stereo_2021} as our primary backbone. Unlike traditional cost-volume approaches (e.g., PSMNet), RAFT-Stereo utilizes a recurrent architecture with Gated Recurrent Units (GRUs) to iteratively refine the disparity field.
+ A stereo neural architecture is required to process our binocular inputs. In this work, we specifically employ RAFT-Stereo \cite{lipson_raft-stereo_2021} as our primary backbone. Unlike traditional cost-volume approaches (e.g., PSMNet), RAFT-Stereo utilizes a recurrent architecture with Gated Recurrent Units (GRUs) to iteratively refine the disparity field.
 
 This choice is particularly strategic for our asymmetric setup. The iterative mechanism allows the network to progressively resolve the photometric discrepancy between the parallel and cross views: early iterations establish global context from the background consistency ($I_{\parallel} \approx I_{\perp}$), while later iterations refine the object boundaries using the high-frequency structural cues provided by our polarization inputs. Furthermore, as a CNN-based architecture, it retains the inductive bias for locality, making it highly data-efficient for our fine-tuning paradigm compared to Transformer-based alternatives. Formally, the network inference is defined as:
 \begin{equation}
     \hat{\mathbf{D}} = f_\theta(\mathbf{X}_{\parallel}, \mathbf{X}_{\perp})
 \end{equation}
-
-\vspace{2mm}
-\noindent \textbf{Optimization Protocol.} To achieve the claimed data efficiency, we formulate the training as a transfer learning problem. Instead of random initialization, we initialize the network parameters $\theta_{init}$ with weights $\theta_{pre}$ pre-trained on a large-scale opaque dataset (e.g., Scene Flow):
+ To achieve the claimed data efficiency, we formulate the training as a transfer learning problem. Instead of random initialization, we initialize the network parameters $\theta_{init}$ with weights $\theta_{pre}$ pre-trained on a large-scale opaque dataset (e.g., Scene Flow):
 \begin{equation}
     \theta_{init} \leftarrow \theta_{pre}
 \end{equation}
@@ -153,6 +293,14 @@ The optimization objective is then to find the optimal parameters $\theta^*$ tha
 Since our physics-informed inputs structurally align with the source domain of $\theta_{pre}$, the optimization starts from a favorable basin of attraction, requiring significantly fewer iterations to converge than training from scratch.
 
 \subsection{Loss Function and Robustness Strategy}
+
+\begin{equation}
+    \mathcal{L} = \sum_{i=1}^{N} \gamma^{N-i} || \mathbf{D}_i - \mathbf{D}_{gt} ||_1
+    \label{eq:lossfunction}
+\end{equation}
+As shown in \cref{eq:lossfunction}, we adopt the standard loss formulation used in RAFT-Stereo, where the total loss $\mathcal{L}$ is computed as a weighted sum of the Manhattan distances between the predicted disparity $\mathbf{D}_i$ at each iteration $i$ and the ground-truth disparity $\mathbf{D}_{gt}$. Compared to the Euclidean distance, the Manhattan distance corresponds to a Mean Absolute Error ($MAE$) formulation rather than Mean Squared Error ($MSE$), imposing a {linear penalty} on outliers rather than a quadratic one. This property is particularly beneficial in real-world transparent-object scenarios, where specular highlights and refraction effects may introduce occasional large residuals. By reducing the sensitivity to such outliers, the model exhibits improved robustness under realistic sensing disturbances.
+
+The exponential weighting term $\gamma^{N-i}$ controls the relative importance of predictions at different recurrent iterations. This design emphasizes later predictions, which are expected to be more refined, while still providing supervisory signals to earlier iterations. The total loss is obtained by accumulating the weighted losses across all iterations, encouraging the network to optimize the entire iterative refinement process rather than focusing solely on the final output. As a result, the model learns to progressively resolve challenging disparity ambiguities introduced by transparent surfaces.
 
 \section{EXPERIMENTS}
 \section{RESULTS}
