@@ -161,9 +161,9 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     % ----- Upper path: reflected light -> Analyzer 0 deg -> Camera A -----
     % Reflected ray going up-left
     \begin{scope}[shift={(7.1,0)}]
-        \draw[thick,->,gray] (0,0) -- (-3,2.2);
+        \draw[thick,->,gray] (0,0) -- (-2.7,1.98);
         
-        \draw[red,thick,samples=50,domain=0:2.8] 
+        \draw[red,thick,samples=50,domain=0:2.5] 
             plot ({-(\x)*cos(36.25)},{(\x)*sin(36.25)+0.35*sin(\x*400)*cos(36.25)});
     \end{scope}
 
@@ -192,9 +192,9 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     % ----- Lower path: reflected light -> Analyzer 90 deg -> Camera B -----
     % Reflected ray going down-left
     \begin{scope}[shift={(7.1,0)}]
-        \draw[thick,->,gray] (0,0) -- (-3,-2.2);
+        \draw[thick,->,gray] (0,0) -- (-2.7,-1.98);
         
-        \draw[red,thick,samples=50,domain=0:2.8] 
+        \draw[red,thick,samples=50,domain=0:2.5] 
             plot ({-(\x)*cos(36.25)},{-(\x)*sin(36.25)+0.35*sin(\x*400)*cos(36.25)});
     \end{scope}
 
@@ -236,7 +236,7 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     \draw[gray,dashed,thin] (-1,0) -- (7,0);
 
     \end{tikzpicture}
-    \caption{Conceptual illustration of the active asymmetric polarization stereo system. The light source is pre-polarized at 0°. Two cameras positioned as a stereo pair are equipped with orthogonal analyzers: Camera A with 0° (parallel to source) and Camera B with 90° (orthogonal to source). This asymmetry creates a photometric discrepancy at transparent boundaries while maintaining consistency on opaque surfaces.}
+    \caption{Polarization imaging system schematic.}
     \label{fig:polarization}
 \end{figure}
 
