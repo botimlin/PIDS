@@ -18,11 +18,23 @@
 %\usepackage{amssymb}  % assumes amsmath package installed
 \usepackage{cite}
 \usepackage{tikz}
+\usepackage{amsmath}
 \usepackage{tikz-3dplot}
-\usetikzlibrary{arrows.meta, calc, fadings, decorations.markings, shapes.geometric}
+\usetikzlibrary{arrows.meta, calc, fadings, decorations.markings, shapes.geometric, positioning, fit, backgrounds , shadows}
 \usepackage{cleveref}
 \usepackage{graphicx}
 \usepackage{etoolbox}
+\definecolor{inputblue}{RGB}{66, 133, 244}
+\definecolor{networkpurple}{RGB}{103, 58, 183}
+\definecolor{outputgreen}{RGB}{52, 168, 83}
+\definecolor{blockfill}{RGB}{245, 247, 255}
+\definecolor{gruorange}{RGB}{255, 152, 0}
+\definecolor{grufill}{RGB}{255, 248, 235}
+\definecolor{arrowblue}{RGB}{33, 150, 243}
+\definecolor{transparentpink}{RGB}{233, 30, 99}
+\definecolor{simColor}{RGB}{230, 240, 255} % 淺藍色 (模擬)
+\definecolor{realColor}{RGB}{255, 240, 230} % 淺橘色 (真實)
+\definecolor{networkColor}{RGB}{70, 70, 70} % 深灰色 (網絡)
 \title{\LARGE \bf
 Physics-Informed Deep Stereo: Active Asymmetric Polarization 
 for Data-Efficient Transparent Obstacle Avoidance
@@ -303,6 +315,327 @@ As shown in \cref{eq:lossfunction}, we adopt the standard loss formulation used 
 The exponential weighting term $\gamma^{N-i}$ controls the relative importance of predictions at different recurrent iterations. This design emphasizes later predictions, which are expected to be more refined, while still providing supervisory signals to earlier iterations. The total loss is obtained by accumulating the weighted losses across all iterations, encouraging the network to optimize the entire iterative refinement process rather than focusing solely on the final output. As a result, the model learns to progressively resolve challenging disparity ambiguities introduced by transparent surfaces.
 
 \section{EXPERIMENTS}
+
+\begin{figure}[h!]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tikzpicture}[
+    inputimg/.style={
+        draw=inputblue,
+        line width=1.2pt,
+        rounded corners=2pt,
+        inner sep=0pt,
+        outer sep=0pt
+    },
+    encoder/.style={
+        draw=networkpurple,
+        line width=1pt,
+        minimum width=2.6cm,
+        minimum height=1.5cm,
+        rounded corners=2pt,
+        fill=blockfill,
+        font=\small\sffamily,
+        align=center
+    },
+    corrvolume/.style={
+        draw=networkpurple,
+        line width=1pt,
+        minimum width=2.2cm,
+        minimum height=2cm,
+        rounded corners=2pt,
+        fill=blockfill,
+        font=\small\sffamily,
+        align=center
+    },
+    gru/.style={
+        draw=gruorange,
+        line width=1.2pt,
+        minimum width=2.4cm,
+        minimum height=1.5cm,
+        rounded corners=3pt,
+        fill=grufill,
+        font=\small\sffamily,
+        align=center
+    },
+    outputimg/.style={
+        draw=outputgreen,
+        line width=1.2pt,
+        rounded corners=2pt,
+        inner sep=2pt
+    },
+    sectionlabel/.style={
+        font=\large\bfseries\sffamily,
+        text=black
+    },
+    imglabel/.style={
+        font=\small\sffamily,
+        text=black,
+        align=center
+    },
+    arrow/.style={
+        ->,
+        >={Stealth[length=2.5mm, width=2mm]},
+        line width=1.2pt,
+        arrowblue
+    },
+    bigarrow/.style={
+        ->,
+        >={Stealth[length=3.5mm, width=2.5mm]},
+        line width=1.8pt,
+        arrowblue
+    }
+]
+
+% ============================================
+% INPUT SECTION
+% ============================================
+\node[sectionlabel] at (-1, 4) {\textbf{INPUT}};
+
+% Parallel View - 插入你的圖片
+\node[inner sep=0pt] (img_parallel) at (-1, 1.5) {\includegraphics[width=2.8cm, height=2cm]{paper//Figures/IMG_for_testing.png}};
+\node[imglabel] at (-1, 2.75) {Parallel View ($I_\parallel$)};
+
+% Cross View - 插入你的圖片
+\node[inner sep=0pt] (img_cross) at (-1, -1) {\includegraphics[width=2.8cm, height=2cm]{paper//Figures/IMG_for_testing.png}};
+\node[imglabel] at (-1, 0.25) {Cross View ($I_\perp$)};
+
+% ============================================
+% NETWORK SECTION
+% ============================================
+\node[sectionlabel] at (7.4, 4) {\textbf{NETWORK}};
+\node[font=\small\sffamily\itshape, text=gray!70!black] at (7.4, 3.45) {(RAFT-Stereo)};
+
+% Feature Encoder - Top
+\node[encoder] (enc_top) at (3.8, 1.5) {Feature Encoder\\{\scriptsize(multi-scale)}};
+
+% Feature Encoder - Bottom
+\node[encoder] (enc_bot) at (3.8, -1) {Feature Encoder\\{\scriptsize(multi-scale)}};
+
+% Shared weights
+\draw[dashed, networkpurple!60, line width=0.8pt] (enc_top.south) -- (enc_bot.north);
+\node[font=\scriptsize\sffamily, text=networkpurple!70] at (3.8, 0.25) {shared};
+
+% Correlation Volume
+\node[corrvolume] (corr) at (7.2, 0.25) {Correlation\\Volume};
+
+% GRU Update
+\node[gru] (gru) at (11, 0.25) {GRU Update};
+
+% Recurrence arrow
+\draw[->, >={Stealth[length=2mm, width=1.5mm]}, line width=1pt, gruorange] 
+    ([xshift=0.6cm]gru.north) 
+    .. controls ++(0, 0.8) and ++(0, 0.8) .. 
+    ([xshift=-0.6cm]gru.north);
+
+% ×N
+\node[font=\scriptsize\bfseries\sffamily, text=gruorange] at (11, 2.0) {$\times N$};
+
+% Update equation
+\node[font=\scriptsize\sffamily, text=gruorange!80] at (11, -1.3) {$D_{i+1} = D_i + \Delta D_i$};
+
+% ============================================
+% OUTPUT SECTION
+% ============================================
+\node[sectionlabel] at (15.5, 4) {\textbf{OUTPUT}};
+
+% Disparity Map - 插入你的圖片
+\node[inner sep=0pt] (output) at (15.5, 0.25) {\includegraphics[width=3cm, height=2.4cm]{paper//Figures/IMG_for_testing.png}};
+\node[imglabel] at (15.5, 1.7) {Disparity Map ($\hat{D}$)};
+
+% Transparent region（如果需要可以取消註解）
+% \draw[transparentpink, line width=0.8pt, dashed, rounded corners=1pt] 
+%     ([shift={(0.2cm, -0.1cm)}]output.center) rectangle ([shift={(1.1cm, 0.7cm)}]output.center);
+% \node[font=\tiny\sffamily, text=transparentpink] at ([shift={(0.65cm, -0.35cm)}]output.center) {transparent};
+
+% ============================================
+% ARROWS
+% ============================================
+\draw[bigarrow] (img_parallel.east) -- (enc_top.west);
+\draw[bigarrow] (img_cross.east) -- (enc_bot.west);
+\draw[arrow] (enc_top.east) -- ++(0.5, 0) |- (corr.west);
+\draw[arrow] (enc_bot.east) -- ++(0.5, 0) |- (corr.west);
+\draw[arrow] (corr.east) -- (gru.west);
+\draw[bigarrow] (gru.east) -- (output.west);
+
+% ============================================
+% BACKGROUND BOXES
+% ============================================
+\begin{scope}[on background layer]
+    \node[fit=(img_parallel)(img_cross), 
+          fill=inputblue!6, 
+          draw=inputblue!30, 
+          line width=0.5pt,
+          rounded corners=6pt,
+          inner sep=20pt] {};
+    
+    \node[fit=(enc_top)(enc_bot)(corr)(gru), 
+          fill=networkpurple!5, 
+          draw=networkpurple!25, 
+          line width=0.5pt,
+          rounded corners=6pt,
+          inner sep=25pt] {};
+    
+    \node[fit=(output), 
+          fill=outputgreen!6, 
+          draw=outputgreen!30, 
+          line width=0.5pt,
+          rounded corners=6pt,
+          inner sep=20pt] {};
+\end{scope}
+
+\end{tikzpicture}%
+}%
+\caption{Overview of the proposed PIDS framework.}
+\label{fig:system_overview}
+\end{figure}
+\begin{figure}[h!] 
+\centering
+\begin{tikzpicture}[
+    font=\sffamily\scriptsize,
+    node distance=0.6cm and 0.4cm,
+    % --- Style Definitions ---
+    block/.style={
+        rectangle, 
+        draw=black!60, 
+        thick, 
+        fill=white, 
+        minimum width=2.0cm,
+        minimum height=0.9cm,
+        align=center, 
+        rounded corners=2pt,
+        drop shadow={opacity=0.15, shadow xshift=1pt, shadow yshift=-1pt}
+    },
+    data/.style={
+        trapezium, 
+        trapezium left angle=75, 
+        trapezium right angle=105, 
+        draw=black!60, 
+        thick, 
+        fill=white, 
+        align=center, 
+        inner sep=4pt
+    },
+    network/.style={
+        rectangle, 
+        draw=blue!60, 
+        line width=1.2pt, 
+        fill=blue!10, 
+        minimum width=2.3cm, 
+        minimum height=0.9cm, 
+        align=center, 
+        rounded corners=4pt
+    },
+    arrow/.style={-{Stealth[length=2mm, width=1.5mm]}, thick, darkgray},
+    loss_arrow/.style={-{Stealth[length=2mm, width=1.5mm]}, thick, red!70, dashed},
+    dashed_arrow/.style={-{Stealth[length=2mm, width=1.5mm]}, thick, blue!80, dashed},
+]
+
+    % ==========================================
+    % STAGE 1: SIMULATION (Top)
+    % ==========================================
+    
+    \node[font=\bfseries\small\color{blue!70}] (label_s1) {Stage I: Simulation (70\%)};
+    
+    \node[block, below=0.4cm of label_s1] (blender) {
+        \textbf{Blender Sim}\\
+        \tiny Physics-Aligned
+    };
+    
+    \node[data, below=0.5cm of blender] (sim_data) {
+        \textbf{Sim Data}\\
+        $(I_{\parallel}, I_{\perp})_{sim}$, $D_{sim}$
+    };
+    
+    \node[network, below=0.5cm of sim_data] (net_pre) {
+        \textbf{Pre-train Net}\\
+        \tiny Learn Polarization Cues
+    };
+
+    % Connections
+    \draw[arrow] (blender) -- (sim_data);
+    \draw[arrow] (sim_data) -- (net_pre);
+
+    % ==========================================
+    % STAGE 2: REAL WORLD (Bottom)
+    % ==========================================
+    
+    \node[below=1.2cm of net_pre, font=\bfseries\small\color{orange!80}] (label_s2) {Stage II: Real Correction (30\%)};
+    
+    \node[block, below=0.4cm of label_s2] (real_setup) {
+        \textbf{Real Platform}\\
+        \tiny Hardware Setup
+    };
+    
+    \node[block, below left=0.5cm and 0.2cm of real_setup] (capture_glass) {
+        \textbf{Capture A}\\
+        \tiny (Transparent)\\
+        \tiny Filtered
+    };
+    
+    \node[block, below right=0.5cm and 0.2cm of real_setup] (capture_proxy) {
+        \textbf{Capture B}\\
+        \tiny (Proxy)\\
+        \tiny RGB-D
+    };
+    
+    \node[data, below=0.5cm of capture_glass, fill=blue!5] (real_input) {
+        $(I_{\parallel}, I_{\perp})_{real}$
+    };
+    
+    \node[data, below=0.5cm of capture_proxy, fill=red!5] (real_gt) {
+        \textbf{Ground Truth}\\
+        $D_{gt}$
+    };
+    
+    \node[network, below=0.6cm of $(real_input.south)!0.5!(real_gt.south)$, draw=orange!60, fill=orange!10] (net_real) {
+        \textbf{Correction Net}\\
+        \tiny Fine-tuning
+    };
+
+    % --- Connections ---
+    \draw[arrow] (real_setup.south) -- ++(0,-0.15) -| (capture_glass.north);
+    \draw[arrow] (real_setup.south) -- ++(0,-0.15) -| (capture_proxy.north);
+    \draw[arrow] (capture_glass) -- (real_input);
+    \draw[arrow] (capture_proxy) -- (real_gt);
+    
+    % Input Arrow
+    \draw[arrow] (real_input.south) -- ++(0,-0.15) -| (net_real.north);
+    
+    % ★★★ 修改處：Loss Arrow & Label ★★★
+    % 1. 先下移 0.15cm
+    % 2. 定義轉折點 (corner)
+    % 3. 畫橫線到對齊 net_real 的位置，並在中間上方 (midway, above) 加上 Loss 標籤
+    % 4. 最後垂直向下連接
+    \draw[loss_arrow] (real_gt.south) -- ++(0,-0.15) coordinate (corner) 
+        -- (corner -| net_real.north) node[midway, above, font=\bfseries\tiny, color=red!70, yshift=-1pt, xshift=-0.5cm] {Loss} 
+        -- (net_real.north);
+    
+    % 移除了原本獨立的 \node {Loss}; 避免重複
+
+    % ==========================================
+    % BACKGROUNDS & TRANSFER ARROW
+    % ==========================================
+    \begin{scope}[on background layer]
+        \node[fit=(label_s1)(blender)(sim_data)(net_pre), fill=blue!5, rounded corners=5pt, inner sep=6pt] (sim_box) {};
+        \draw[blue!30, thick, rounded corners=5pt] (sim_box.south west) rectangle (sim_box.north east);
+        
+        \node[fit=(label_s2)(real_setup)(capture_glass)(capture_proxy)(real_input)(real_gt)(net_real), fill=orange!5, rounded corners=5pt, inner sep=6pt] (real_box) {};
+        \draw[orange!30, thick, rounded corners=5pt] (real_box.south west) rectangle (real_box.north east);
+    \end{scope}
+
+    % Weights Transfer Arrow
+    \draw[dashed_arrow] (sim_box.south -| net_pre) -- (real_box.north -| net_pre)
+        node[midway, right, font=\bfseries\tiny\color{blue!80}, xshift=2pt, align=left] {Weights\\Transfer};
+
+\end{tikzpicture}
+\caption{\textbf{Two-Stage Fine-tuning Framework.} 
+\textbf{Stage I:} Pre-training on synthetic data (70\%) from a physics-aligned Blender simulation to learn polarization cues. 
+\textbf{Stage II:} Correction fine-tuning on real data (30\%) using a proxy strategy where transparent objects are replaced by opaque proxies to obtain ground truth depth ($D_{gt}$) from RGB-D sensors, while input images capture actual transparent glass.}
+\label{fig:fine_tuning_pipeline}
+\end{figure}
+
+
+
 \section{RESULTS}
 \section{CONCLUSIONS}
 \section*{APPENDIX}
