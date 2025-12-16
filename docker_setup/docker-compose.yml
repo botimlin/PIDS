@@ -1,0 +1,24 @@
+services:
+  pids-system:
+    build: .
+    container_name: pids_container
+    network_mode: "host"
+    
+    privileged: true
+    devices:
+      - "/dev/v4l2-subdev0:/dev/v4l2-subdev0"
+      - "/dev/v4l2-subdev1:/dev/v4l2-subdev1"
+      - "/dev/media0:/dev/media0"
+      - "/dev/media1:/dev/media1"
+      - "/dev/video0:/dev/video0"
+      - "/dev/dma_heap:/dev/dma_heap" 
+    
+    volumes:
+      - ./volume:/app/output
+      - /run/udev:/run/udev:ro  
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    restart: unless-stopped
+    
