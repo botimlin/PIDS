@@ -20,6 +20,7 @@
 \usepackage{tikz}
 \usepackage{amsmath}
 \usepackage{tikz-3dplot}
+\usepackage{siunitx}
 \usetikzlibrary{arrows.meta, calc, fadings, decorations.markings, shapes.geometric, positioning, fit, backgrounds , shadows}
 \usepackage{cleveref}
 \usepackage{graphicx}
@@ -419,7 +420,7 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 
 % Shared weights
 \draw[dashed, networkpurple!60, line width=0.8pt] (enc_top.south) -- (enc_bot.north);
-\node[font=\scriptsize\sffamily, text=networkpurple!70] at (4.25, 0.25) {shared};
+\node[font=\scriptsize\sffamily, text=networkpurple!70] at (3.775, 0.25) {shared};
 
 % Correlation Volume
 \node[corrvolume] (corr) at (7.2, 0.25) {Correlation\\Volume};
@@ -490,14 +491,28 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 \label{fig:system_overview}
 \end{figure*}
 \subsection{Experiment Setup}
-\subsubsection{Hardware and Layout}
-\subsubsection{Radiometric Calibration}
+\subsubsection{\textbf{Hardware and Layout}}
+We employ a stereo imaging system based on Raspberry Pi Global Shutter (GS) cameras (IMX296LQR-C) equipped with \SI{6}{mm} focal length lenses and an \SI{80}{mm} stereo baseline.
+To implement the asymmetric polarization setup, linear polarizing filters are attached to the camera lenses, with the left and right analyzers oriented at $0^{\circ}$ and $90^{\circ}$, respectively.
+Active illumination is provided by a flat-panel LED light source mounted above the stereo rig and covered with a linear polarizing sheet oriented at $0^{\circ}$ to define the polarization state of the incident light.
+Global shutter sensors are used to avoid rolling shutter artifacts during image acquisition.
+The hardware configuration is fixed across all experiments.
+An auxiliary RGB-D camera is used solely as a reference sensor during data acquisition.
 
-\subsection{Training Details and Baselines}
+\subsubsection{\textbf{Radiometric Calibration}}
+To ensure stable photometric behavior, we apply standard radiometric calibration, including dark-field and flat-field corrections.
+Dark-field correction removes sensor bias and thermal noise, while flat-field correction compensates for spatially varying sensor gain and optical vignetting.
+These corrections are applied identically to both stereo views and do not encode any scene-dependent information.
+
+\subsubsection{\textbf{Experimental Environment}}
+To enable controlled evaluation, we employ a physically scaled-down experimental environment with a 1:10 scale ratio.
+Scene components are primarily fabricated via 3D printing, and all object positions are fixed using concealed base fixtures to ensure repeatability across experiments, while preserving geometric configurations representative of real-world scenarios.
+
+\subsection{Training Architecture}
 \begin{figure}[h!] 
 \centering
 \begin{tikzpicture}[
-    scale=0.75, transform shape,
+    scale=0.95, transform shape,
     font=\sffamily\scriptsize,
     node distance=0.6cm and 0.4cm,
     % --- Style Definitions ---
@@ -642,7 +657,23 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 Ground-truth depth $D_{gt}$ is obtained using an opaque proxy replacement strategy, where transparent objects are temporarily replaced by opaque counterparts to enable reliable RGB-D sensing.Importantly, the network input always consists of real transparent polarization images, while proxy objects are used solely for supervision.}
 \label{fig:fine_tuning_pipeline}
 \end{figure}
+We adopt a two-stage fine-tuning training strategy, as illustrated in \cref{fig:fine_tuning_pipeline}.
+All data used for fine-tuning are divided into two stages based on their acquisition process, with the majority of the data obtained from simulation.
+Although the training data are generated in a simulated environment, the data generation strictly follows real-world mechanical configurations and sensing geometry to ensure that the fine-tuned network exhibits strong transferability.
 
+After completing training on the simulated data, we further perform a calibration fine-tuning stage using real-world data, while employing the same loss functions to optimize the model.
+All loss settings are inherited from the model fine-tuned on simulated data to maintain consistency in training objectives across both stages.
+
+To avoid the need for post-processing depth completion when acquiring ground-truth depth maps of transparent objects in real-world scenes, we adopt a proxy object strategy to circumvent this limitation.
+The proxy objects are fabricated based on one-to-one measurements of the transparent glass objects in the scene and are used solely for spatial localization and volume measurement of the transparent objects to obtain reliable depth supervision.
+Throughout the entire training pipeline, the proxy objects are not provided as inputs to the neural network.
+
+All fine-tuning stages in this study use stereo image pairs as input and are trained in a supervised manner with corresponding ground-truth depth maps, enabling the network to effectively learn the critical features required to generate depth maps with high completeness.
+
+To support subsequent comparisons with a purely vision-based approach, we additionally fine-tune a network variant with an identical architecture and training protocol, while excluding polarization information from the input.
+This variant is trained using the same scenes, viewpoints, and amount of training data as the polarization-aware model.
+\subsection{Model Parameters}
+\subsection{Baselines}
 \subsection{Comparison with Baseline RAFT-Stereo}
 \subsection{Controlled Micro-Scale Depth Completeness Evaluation}
 \subsection{Real-World Robot Evaluation}
@@ -650,16 +681,10 @@ Ground-truth depth $D_{gt}$ is obtained using an opaque proxy replacement strate
 \section{RESULTS}
 \section{CONCLUSIONS}
 \section*{APPENDIX}
+\section*{Acknowledgment}
+Portions of this manuscript were refined for clarity and language, and limited code editing support was provided using AI-based assistance tools, specifically Google Gemini and Grammarly.
+The authors are fully responsible for the research ideas, methodology, implementation, experimental results, and conclusions presented in this work.
 \bibliographystyle{IEEEtran.bst}  % 指定使用 IEEE 標準格式
 \bibliography{IEEEfull.bib}
-
-
-
-
-
-
-
-
-
 
 \end{document}
