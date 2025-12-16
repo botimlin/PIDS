@@ -70,7 +70,13 @@ Standard obstacle detection methods struggle significantly in this domain. LiDAR
 
 Recent learning-based methods have shown promise in addressing these limitations. Depth completion approaches train neural networks to infer complete depth maps from corrupted RGB-D inputs \cite{sajjan_clear_2020}. However, these methods are data-intensive, typically requiring tens of thousands of synthetic training images to learn the complex mapping from sparse depth to dense geometry. Active stereo methods \cite{shi_asgrasp_2024} leverage structured light patterns to mitigate textureless issues. While these approaches reduce dependency on scene texture, they remain vulnerable to the complex light transport (e.g., strong specular highlights) inherent to transparent materials, still necessitating extensive training data to generalize.
 
-To address these limitations, we propose a Physics-Informed Deep Stereo (PIDS) framework for data-efficient transparent obstacle detection. Unlike symmetric stereo setups, our approach leverages an active asymmetric polarization configuration. We configure one camera to capture the parallel polarization state (preserving specular highlights) and the other to capture the orthogonal state (suppressing highlights). This setup creates a selective photometric discrepancy: background regions remain consistent across views, enabling reliable stereo matching, while transparent objects exhibit significant intensity differences. This physics-based input representation effectively converts the transparency detection problem into a discrepancy learning task. Consequently, our method enables existing stereo backbones to adapt to transparent scenes via data-efficient fine-tuning, eliminating the need for large-scale specialized datasets or complex architectural modifications.
+To address these limitations, we propose a Physics-Informed Deep Stereo (PIDS) framework for data-efficient transparent obstacle detection. Unlike symmetric stereo setups, our approach leverages an active asymmetric polarization configuration. We configure one camera to capture the parallel polarization state (preserving specular highlights) and the other to capture the orthogonal state (suppressing highlights). This setup creates a selective photometric discrepancy: background regions remain consistent across views, enabling reliable stereo matching, while transparent objects exhibit significant intensity differences. This physics-based input representation effectively converts the transparency detection problem into a discrepancy learning task. Consequently, our method enables existing stereo backbones to adapt to transparent scenes via data-efficient fine-tuning, eliminating the need for large-scale specialized datasets or complex architectural modifications.To summarize, our main contributions are:
+\begin{itemize}
+    \small
+    \item \textbf{A Physics-Informed Sensing Modality}: We propose an active asymmetric polarization setup that converts transparent object detection into a robust photometric discrepancy task.
+    \item \textbf{Data-Efficient Framework}: By leveraging physical cues, we demonstrate that standard stereo backbones can be adapted to transparent scenes with minimal real-world fine-tuning, significantly reducing data requirements compared to SOTA methods.
+    \item \textbf{Generic Compatibility}: Our approach is model-agnostic, capable of transforming existing stereo matching networks (e.g., RAFT-Stereo) into transparent-aware sensors without architectural changes.
+\end{itemize}
 
 \section{RELATED WORK}
 
@@ -248,7 +254,7 @@ We present a physics-informed framework for transparent obstacle avoidance that 
     \draw[gray,dashed,thin] (-1,0) -- (7,0);
 
     \end{tikzpicture}
-    \caption{Polarization imaging system schematic.}
+    \caption{\textbf{Polarization imaging system schematic.} An active light source is polarized at $0^\circ$ via a linear polarizer. The stereo setup consists of Camera A (Parallel View, $I_{\parallel}$) equipped with a $0^\circ$ analyzer to capture specular reflections, and Camera B (Cross View, $I_{\perp}$) equipped with a $90^\circ$ analyzer to suppress them. This asymmetric configuration creates a distinct photometric discrepancy on transparent surfaces while maintaining intensity consistency on diffuse backgrounds.}
     \label{fig:polarization}
 \end{figure}
 
@@ -316,9 +322,9 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 
 \section{EXPERIMENTS}
 
-\begin{figure}[h!]
+\begin{figure*}[t!]
 \centering
-\resizebox{\columnwidth}{!}{%
+\resizebox{0.9\textwidth}{!}{%
 \begin{tikzpicture}[
     inputimg/.style={
         draw=inputblue,
@@ -413,7 +419,7 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 
 % Shared weights
 \draw[dashed, networkpurple!60, line width=0.8pt] (enc_top.south) -- (enc_bot.north);
-\node[font=\scriptsize\sffamily, text=networkpurple!70] at (3.8, 0.25) {shared};
+\node[font=\scriptsize\sffamily, text=networkpurple!70] at (4.25, 0.25) {shared};
 
 % Correlation Volume
 \node[corrvolume] (corr) at (7.2, 0.25) {Correlation\\Volume};
@@ -441,11 +447,6 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 % Disparity Map - 插入你的圖片
 \node[inner sep=0pt] (output) at (15.5, 0.25) {\includegraphics[width=3cm, height=2.4cm]{paper//Figures/IMG_for_testing.png}};
 \node[imglabel] at (15.5, 1.7) {Disparity Map ($\hat{D}$)};
-
-% Transparent region（如果需要可以取消註解）
-% \draw[transparentpink, line width=0.8pt, dashed, rounded corners=1pt] 
-%     ([shift={(0.2cm, -0.1cm)}]output.center) rectangle ([shift={(1.1cm, 0.7cm)}]output.center);
-% \node[font=\tiny\sffamily, text=transparentpink] at ([shift={(0.65cm, -0.35cm)}]output.center) {transparent};
 
 % ============================================
 % ARROWS
@@ -485,12 +486,18 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 
 \end{tikzpicture}%
 }%
-\caption{Overview of the proposed PIDS framework.}
+\caption{\textbf{Overview of the proposed PIDS framework.} The system takes a pair of active asymmetric polarization images as input: the parallel view ($I_{\parallel}$) captures specular reflections, while the cross view ($I_{\perp}$) filters them out. Features are extracted using weight-sharing Siamese encoders to ensure geometric consistency for background regions. Based on the RAFT-Stereo backbone, the network constructs a correlation volume and employs GRU units for iterative disparity updates ($D_{i+1} = D_i + \Delta D$). This mechanism allows the network to leverage the photometric discrepancy at the input level as a physical cue to accurately refine depth estimates for transparent objects.}
 \label{fig:system_overview}
-\end{figure}
+\end{figure*}
+\subsection{Experiment Setup}
+\subsubsection{Hardware and Layout}
+\subsubsection{Radiometric Calibration}
+
+\subsection{Training Details and Baselines}
 \begin{figure}[h!] 
 \centering
 \begin{tikzpicture}[
+    scale=0.75, transform shape,
     font=\sffamily\scriptsize,
     node distance=0.6cm and 0.4cm,
     % --- Style Definitions ---
@@ -534,7 +541,7 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
     % STAGE 1: SIMULATION (Top)
     % ==========================================
     
-    \node[font=\bfseries\small\color{blue!70}] (label_s1) {Stage I: Simulation (70\%)};
+    \node[font=\bfseries\small\color{blue!70}] (label_s1) {Stage I: Large-scale synthetic pre-training};
     
     \node[block, below=0.4cm of label_s1] (blender) {
         \textbf{Blender Sim}\\
@@ -559,7 +566,7 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
     % STAGE 2: REAL WORLD (Bottom)
     % ==========================================
     
-    \node[below=1.2cm of net_pre, font=\bfseries\small\color{orange!80}] (label_s2) {Stage II: Real Correction (30\%)};
+    \node[below=1.2cm of net_pre, font=\bfseries\small\color{orange!80}] (label_s2) {Stage II: Limited real-world fine-tuning};
     
     \node[block, below=0.4cm of label_s2] (real_setup) {
         \textbf{Real Platform}\\
@@ -627,14 +634,18 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
     \draw[dashed_arrow] (sim_box.south -| net_pre) -- (real_box.north -| net_pre)
         node[midway, right, font=\bfseries\tiny\color{blue!80}, xshift=2pt, align=left] {Weights\\Transfer};
 
+
 \end{tikzpicture}
 \caption{\textbf{Two-Stage Fine-tuning Framework.} 
-\textbf{Stage I:} Pre-training on synthetic data (70\%) from a physics-aligned Blender simulation to learn polarization cues. 
-\textbf{Stage II:} Correction fine-tuning on real data (30\%) using a proxy strategy where transparent objects are replaced by opaque proxies to obtain ground truth depth ($D_{gt}$) from RGB-D sensors, while input images capture actual transparent glass.}
+\textbf{Stage I:} The stereo network is pre-trained on large-scale physics-aligned synthetic data generated in Blender to learn polarization-induced photometric cues.
+\textbf{Stage II:} the same network is fine-tuned on a limited amount of real-world data.
+Ground-truth depth $D_{gt}$ is obtained using an opaque proxy replacement strategy, where transparent objects are temporarily replaced by opaque counterparts to enable reliable RGB-D sensing.Importantly, the network input always consists of real transparent polarization images, while proxy objects are used solely for supervision.}
 \label{fig:fine_tuning_pipeline}
 \end{figure}
 
-
+\subsection{Comparison with Baseline RAFT-Stereo}
+\subsection{Controlled Micro-Scale Depth Completeness Evaluation}
+\subsection{Real-World Robot Evaluation}
 
 \section{RESULTS}
 \section{CONCLUSIONS}
