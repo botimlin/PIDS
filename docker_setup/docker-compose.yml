@@ -14,11 +14,13 @@ services:
       - "/dev/dma_heap:/dev/dma_heap" 
     
     volumes:
-      - ./volume:/app/output
+      - ./output:/app/output
       - /run/udev:/run/udev:ro  
+      - /tmp/.X11-unix:/tmp/.X11-unix
     
     environment:
       - PYTHONUNBUFFERED=1
+      - DISPLAY=${DISPLAY}
     
     restart: unless-stopped
     
