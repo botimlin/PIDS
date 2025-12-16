@@ -17,4 +17,4 @@ WORKDIR /app
 
 COPY . /app
 
-CMD ["python3", "web_stream.py"]
+CMD ["python3"]

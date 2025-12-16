@@ -4,16 +4,16 @@ import numpy as np
 import time
 from picamera2 import Picamera2
 
-# ================= 設定區 =================
-# 解析度設定 (兩顆要一樣)
-# 建議先用低一點的解析度確保流暢，推論時再調高
+# ================= Settings =================
+# Resolution setting (both cameras should match)
+# Recommend using a lower resolution first for smoothness; increase for inference
 RESOLUTION = (640, 480) 
 FRAME_RATE = 30
 # =========================================
 
 class CameraStream:
     """
-    使用獨立執行緒讀取相機，避免卡住主迴圈
+    Read camera frames in a dedicated thread to avoid blocking the main loop
     """
     def __init__(self, camera_id):
         self.camera_id = camera_id
@@ -24,7 +24,7 @@ class CameraStream:
         print(f"[Cam {camera_id}] Initializing...")
         self.picam2 = Picamera2(camera_num=camera_id)
         
-        # 設定相機參數
+        # Set camera parameters
         config = self.picam2.create_video_configuration(
             main={"size": RESOLUTION, "format": "BGR888", "fps": FRAME_RATE}
         )
@@ -44,10 +44,10 @@ class CameraStream:
     def update(self):
         while self.running:
             try:
-                # 抓取最新影像
+                # grab latest frame
                 img = self.picam2.capture_array()
                 
-                # 線程安全鎖 (雖然 Python GIL 會幫忙，但加鎖是好習慣)
+                # thread-safe lock (GIL helps, but locking is good practice)
                 with self.lock:
                     self.frame = img
             except Exception as e:
@@ -69,41 +69,41 @@ class CameraStream:
 def main():
     print("=== PIDS Stereo Viewer ===")
     
-    # 1. 初始化兩顆鏡頭
+    # 1. Initialize two cameras
     cam_left = CameraStream(0)
     cam_right = CameraStream(1)
     
-    # 2. 啟動擷取執行緒
+    # 2. Start capture threads
     cam_left.start()
     cam_right.start()
     
-    # 等待相機暖機
+    # Wait for cameras to warm up
     time.sleep(2)
     
     print("Starting Main Loop. Press 'q' to exit.")
     
     try:
         while True:
-            # 3. 獲取最新畫面
+            # 3. Fetch latest frames
             frame_L = cam_left.read()
             frame_R = cam_right.read()
             
-            # 檢查是否都讀到了
+            # check both frames are available
             if frame_L is not None and frame_R is not None:
                 
-                # --- (未來這裡可以插入校正代碼) ---
+                # --- (calibration code can be inserted here in the future) ---
                 # frame_L = apply_calibration(frame_L, 'L')
                 # frame_R = apply_calibration(frame_R, 'R')
-                # --------------------------------
+                # -------------------------------------------------------------
                 
-                # 4. 拼接畫面 (Horizontal Stack)
-                # 左邊是 Cam 0，右邊是 Cam 1
+                # 4. Stitch frames (Horizontal Stack)
+                # Left is Cam 0, Right is Cam 1
                 combined_view = np.hstack((frame_L, frame_R))
                 
-                # 5. 顯示
+                # 5. Display
                 cv2.imshow('PIDS Stereo View (Left / Right)', combined_view)
             
-            # 按 'q' 退出
+            # press 'q' to exit
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 
@@ -111,7 +111,7 @@ def main():
         pass
         
     finally:
-        # 6. 優雅退出，釋放資源
+        # 6. Graceful exit, release resources
         print("\nStopping cameras...")
         cam_left.stop()
         cam_right.stop()

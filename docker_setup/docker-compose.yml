@@ -2,6 +2,7 @@ services:
   pids-system:
     build: .
     container_name: pids_container
+    command: tail -f /dev/null
     network_mode: "host"
     
     privileged: true
@@ -15,6 +16,7 @@ services:
     
     volumes:
       - ./output:/app/output
+      - ./codes:/app/codes
       - /run/udev:/run/udev:ro
       - /home/tim/.Xauthority:/root/.Xauthority:rw
     
