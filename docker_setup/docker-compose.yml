@@ -15,8 +15,8 @@ services:
     
     volumes:
       - ./output:/app/output
-      - /run/udev:/run/udev:ro  
-      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /run/udev:/run/udev:ro
+      - /home/tim/.Xauthority:/root/.Xauthority:rw
     
     environment:
       - PYTHONUNBUFFERED=1
