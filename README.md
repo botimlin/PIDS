@@ -1,5 +1,5 @@
 # PIDS: Physics-Informed Deep Stereo
-### Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Avoidance
+### Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Detection
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](LINK_TO_YOUR_NOTEBOOK_URL)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
