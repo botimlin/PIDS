@@ -18,6 +18,7 @@
 %\usepackage{amssymb}  % assumes amsmath package installed
 \usepackage{cite}
 \usepackage{amssymb}
+\usepackage{gensymb}
 \usepackage{tikz}
 \usepackage{amsmath}
 \usepackage{tikz-3dplot}
@@ -499,10 +500,12 @@ The exponential weighting term $\gamma^{N-i}$ controls the relative importance o
 \subsubsection{\textbf{Hardware and Layout}}
 We employ a stereo imaging system based on Raspberry Pi Global Shutter (GS) cameras (IMX296LQR-C) equipped with \SI{6}{mm} focal length lenses and an \SI{80}{mm} stereo baseline.
 To implement the asymmetric polarization setup, linear polarizing filters are attached to the camera lenses, with the left and right analyzers oriented at $0^{\circ}$ and $90^{\circ}$, respectively.
-Active illumination is provided by a flat-panel LED light source mounted above the stereo rig and covered with a linear polarizing sheet oriented at $0^{\circ}$ to define the polarization state of the incident light.
-Global shutter sensors are used to avoid rolling shutter artifacts during image acquisition.
-The hardware configuration is fixed across all experiments.
-An auxiliary RGB-D camera is used solely as a reference sensor during data acquisition.
+Active illumination is provided by a flat-panel LED light source mounted above the stereo rig and covered with a linear polarizing sheet oriented at 0\textdegree to define the polarization state of the incident light.
+Based on Fresnel reflection analysis, the illumination is arranged to favor incidence angles near Brewster’s angle for common glass materials (approximately 56\textdegree for $n \approx1.5$ ).
+In practice, this is achieved by tilting the light source by approximately 35\textdegree relative to the camera optical axis, which is expected to increase the degree of polarization of specular reflections while maintaining sufficient illumination coverage and field-of-view overlap.
+Global shutter sensors are employed to avoid rolling shutter artifacts during image acquisition.
+The hardware configuration is fixed across all experiments to ensure consistency and reproducibility.
+An auxiliary RGB-D camera is used solely as a reference sensor during data acquisition and does not contribute to the network input.
 
 \subsubsection{\textbf{Radiometric Calibration}}
 To ensure stable photometric behavior, we apply standard radiometric calibration, including dark-field and flat-field corrections.
