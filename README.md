@@ -114,7 +114,7 @@ Note: The full dataset including polarization-difference maps will be released u
 If you use this hardware configuration, code, or method in your research, please cite:
 ```bash
 @article{lin2025pids,
-  title={Physics-Informed Deep Stereo: Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Avoidance},
+  title={Physics-Informed Deep Stereo: Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Detection},
   author={Lin, Po-Ting and [Add Co-authors Here]},
   journal={arXiv preprint arXiv:XXXX.XXXXX},
   year={2025}
