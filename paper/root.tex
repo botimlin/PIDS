@@ -569,7 +569,7 @@ Scene components are primarily fabricated via 3D printing, and all object positi
     \node[font=\bfseries\small\color{blue!70}] (label_s1) {Stage I: Large-scale synthetic pre-training};
     
     \node[block, below=0.4cm of label_s1] (blender) {
-        \textbf{Blender Sim}\\
+        \textbf{Simulation software}\\
         \tiny Physics-Aligned
     };
     
@@ -662,7 +662,7 @@ Scene components are primarily fabricated via 3D printing, and all object positi
 
 \end{tikzpicture}
 \caption{\textbf{Two-Stage Fine-tuning Framework.} 
-\textbf{Stage \Rmnum{1}:} The stereo network is pre-trained on large-scale physics-aligned synthetic data generated in Blender to learn polarization-induced photometric cues.
+\textbf{Stage \Rmnum{1}:} The stereo network is pre-trained on large-scale physics-aligned synthetic data generated in simulation software to learn polarization-induced photometric cues.
 \textbf{Stage \Rmnum{2}:} the same network is fine-tuned on a limited amount of real-world data.
 Ground-truth depth $D_{gt}$ is obtained using an opaque proxy replacement strategy, where transparent objects are temporarily replaced by opaque counterparts to enable reliable RGB-D sensing.Importantly, the network input always consists of real transparent polarization images, while proxy objects are used solely for supervision.}
 \label{fig:fine_tuning_pipeline}
