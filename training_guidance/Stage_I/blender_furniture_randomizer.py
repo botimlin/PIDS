@@ -93,7 +93,7 @@ def create_material(name, color, is_glass=False):
         bsdf = mat.node_tree.nodes["Principled BSDF"]
         
         if is_glass:
-            bsdf.inputs["Transmission"].default_value = 1.0
+            bsdf.inputs["Transmission Weight"].default_value = 1.0
             bsdf.inputs["Roughness"].default_value = 0.05
             bsdf.inputs["IOR"].default_value = 1.45
             bsdf.inputs["Base Color"].default_value = (1, 1, 1, 1)
