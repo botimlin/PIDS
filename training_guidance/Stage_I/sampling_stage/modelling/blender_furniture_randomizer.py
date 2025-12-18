@@ -1,10 +1,11 @@
 """
-PIDS Blender 傢俱隨機擺放腳本 (v16.0 - 分層匯出版)
-===================================================
-功能升級:
-1. [分層匯出] 每個場景自動拆分為 _glass.obj (透明) 和 _diffuse.obj (不透明)。
-   這讓 Mitsuba 渲染器可以完美分配材質，不會報錯。
-2. [繼承] 包含自動落地、防穿模、座標保留、自動編號等所有功能。
+PIDS Blender 傢俱隨機擺放腳本 (v16.0 - 分層匯出/防穿模/自動落地)
+===========================================================
+功能:
+1. 讀取 source_ 物件，隨機擺放並適應性縮放 (Shrink-to-Fit)。
+2. 使用 Rotated AABB 數學計算，杜絕穿模。
+3. 自動將場景分層匯出為 _glass.obj (透明) 和 _diffuse.obj (不透明)。
+4. 自動遞增檔名，支援批次量產。
 """
 
 import bpy
@@ -19,8 +20,8 @@ from mathutils import Vector
 # ============================================================
 
 CONFIG = {
-    'num_scenes_per_run': 10, 
-    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes',
+    'num_scenes_per_run': 10,  # 每次執行生成的場景數量
+    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes', # 輸出目錄
     
     'scene': {
         'width': 250,      
@@ -86,7 +87,6 @@ def ensure_directory(directory):
 def get_next_start_index(directory):
     ensure_directory(directory)
     max_idx = 0
-    # 偵測兩種可能的檔名格式
     pattern = re.compile(r"scene_(\d+)(_glass|_diffuse)?\.obj")
     for filename in os.listdir(directory):
         match = pattern.match(filename)
@@ -250,20 +250,14 @@ def create_furniture_adaptive_safe(furniture_type, index, existing_objects, curr
 # ============================================================
 
 def export_split_scene(scene_id, base_dir):
-    """
-    [關鍵] 將場景分為兩部分匯出：
-    1. glass: 透明物體
-    2. diffuse: 傢俱與不透明物體
-    """
+    """將場景分為 glass 和 diffuse 兩部分匯出"""
     # 1. 匯出玻璃 (Glass)
     bpy.ops.object.select_all(action='DESELECT')
     has_glass = False
     for obj in bpy.data.objects:
-        # 選擇所有 glass_ 開頭的生成物
         if obj.name.startswith('glass_') and obj.type == 'MESH':
             obj.select_set(True)
             has_glass = True
-            
     if has_glass:
         filename = f"scene_{scene_id:04d}_glass.obj"
         filepath = os.path.join(base_dir, filename)
@@ -277,11 +271,9 @@ def export_split_scene(scene_id, base_dir):
     bpy.ops.object.select_all(action='DESELECT')
     has_diffuse = False
     for obj in bpy.data.objects:
-        # 選擇所有 diffuse_ 開頭的生成物
         if obj.name.startswith('diffuse_') and obj.type == 'MESH':
             obj.select_set(True)
             has_diffuse = True
-            
     if has_diffuse:
         filename = f"scene_{scene_id:04d}_diffuse.obj"
         filepath = os.path.join(base_dir, filename)
