@@ -193,10 +193,13 @@ def load_obj_scene(mi, obj_path, samples=None):
     scene_dict = {
         'type': 'scene',
         
-        # 積分器
+        # 使用 Stokes integrator 進行偏振追蹤
         'integrator': {
-            'type': 'path',
-            'max_depth': RENDER_CONFIG['max_depth'],
+            'type': 'stokes',
+            'nested': {
+                'type': 'path',
+                'max_depth': RENDER_CONFIG['max_depth'],
+            },
         },
         
         # 左相機 (I∥)
@@ -249,17 +252,17 @@ def load_obj_scene(mi, obj_path, samples=None):
         
         # 偏振 LED 面板光源 (C30Bi)
         # 55° 入射角，接近 Brewster angle
-        'light_panel': {
-            'type': 'area',
-            'radiance': {
-                'type': 'rgb',
-                'value': [50.0, 50.0, 50.0],
-            },
-            'shape': {
-                'type': 'rectangle',
-                'to_world': mi.ScalarTransform4f.translate([0, 0.12, -0.08]) @
-                            mi.ScalarTransform4f.rotate([1, 0, 0], -55) @
-                            mi.ScalarTransform4f.scale([light_width/2, light_height/2, 1]),
+        'light_shape': {
+            'type': 'rectangle',
+            'to_world': mi.ScalarTransform4f.translate([0, 0.12, -0.08]) @
+                        mi.ScalarTransform4f.rotate([1, 0, 0], -55) @
+                        mi.ScalarTransform4f.scale([light_width/2, light_height/2, 1]),
+            'emitter': {
+                'type': 'area',
+                'radiance': {
+                    'type': 'rgb',
+                    'value': [50.0, 50.0, 50.0],
+                },
             },
         },
         
@@ -307,9 +310,13 @@ def load_obj_with_materials(mi, obj_path, mtl_mapping=None):
     scene_dict = {
         'type': 'scene',
         
+        # 使用 Stokes integrator 進行偏振追蹤
         'integrator': {
-            'type': 'path',
-            'max_depth': RENDER_CONFIG['max_depth'],
+            'type': 'stokes',
+            'nested': {
+                'type': 'path',
+                'max_depth': RENDER_CONFIG['max_depth'],
+            },
         },
         
         # 相機（同前）
@@ -357,14 +364,14 @@ def load_obj_with_materials(mi, obj_path, mtl_mapping=None):
             },
         },
         
-        'light_panel': {
-            'type': 'area',
-            'radiance': {'type': 'rgb', 'value': [50.0, 50.0, 50.0]},
-            'shape': {
-                'type': 'rectangle',
-                'to_world': mi.ScalarTransform4f.translate([0, 0.08, 0.05]) @
-                            mi.ScalarTransform4f.rotate([1, 0, 0], -30) @
-                            mi.ScalarTransform4f.scale([light_width/2, light_height/2, 1]),
+        'light_shape': {
+            'type': 'rectangle',
+            'to_world': mi.ScalarTransform4f.translate([0, 0.08, 0.05]) @
+                        mi.ScalarTransform4f.rotate([1, 0, 0], -30) @
+                        mi.ScalarTransform4f.scale([light_width/2, light_height/2, 1]),
+            'emitter': {
+                'type': 'area',
+                'radiance': {'type': 'rgb', 'value': [50.0, 50.0, 50.0]},
             },
         },
     }
@@ -407,20 +414,94 @@ def parse_obj_groups(obj_path):
 # 偏振影像處理
 # ============================================================
 
-def extract_polarization_images(stokes_image):
-    """從 Stokes vector 影像中提取 I∥ 和 I⊥"""
-    if len(stokes_image.shape) == 3 and stokes_image.shape[2] >= 4:
-        S0 = stokes_image[..., 0]
-        S1 = stokes_image[..., 1]
-        
-        I_parallel = np.maximum(0.5 * (S0 + S1), 0)
-        I_cross = np.maximum(0.5 * (S0 - S1), 0)
-    else:
-        # 非偏振模式，直接使用
-        I_parallel = stokes_image
-        I_cross = stokes_image * 0.7
-        print("警告: 非 Stokes 輸出，使用模擬偏振")
+def extract_polarization_images(stokes_image, debug=True):
+    """
+    最終修正版：
+    1. 修正 Mitsuba Interleaved 資料讀取錯誤 (修復洋紅色噪點)
+    2. 調整光譜轉 RGB 矩陣 (修復黃色色偏)
+    3. 統一白平衡基準 (保留 I_para 與 I_cross 的物理相對強度)
+    """
+    stokes_image = np.array(stokes_image)
     
+    # 預設值
+    I_parallel = stokes_image
+    I_cross = stokes_image
+    
+    if len(stokes_image.shape) == 3:
+        h, w, num_channels = stokes_image.shape
+        
+        # -----------------------------------------------------------
+        # 情況 A: 15 通道 (Mitsuba spectral_polarized 預設輸出)
+        # -----------------------------------------------------------
+        if num_channels == 15:
+            # 1. 解碼 Interleaved 格式 (步進切片)
+            # Layout: [W1_S0, W1_S1, W1_S2, W2_S0, W2_S1, W2_S2, ...]
+            S0_spectral = stokes_image[..., 0::3]
+            S1_spectral = stokes_image[..., 1::3]
+            
+            # 2. 計算光譜域的偏振分量
+            # I_parallel = 0.5 * (S0 + S1)
+            # I_cross    = 0.5 * (S0 - S1)
+            I_parallel_spectral = np.maximum(0.5 * (S0_spectral + S1_spectral), 0)
+            I_cross_spectral    = np.maximum(0.5 * (S0_spectral - S1_spectral), 0)
+            
+            # 3. 光譜轉 RGB 矩陣 (Blue Boost 版本，解決偏黃問題)
+            # Row: R, G, B; Col: Wavelength 0~4
+            spectral_to_rgb_matrix = np.array([
+                # Ch0(UV/紫)  Ch1(藍)  Ch2(綠)  Ch3(紅)  Ch4(IR)
+                [0.00,       0.05,    0.10,    0.80,    0.05],  # R (主要吃長波)
+                [0.00,       0.20,    0.75,    0.05,    0.00],  # G (主要吃中波)
+                [0.85,       0.60,    0.05,    0.00,    0.00],  # B (主要吃短波，加強權重!)
+            ])
+            
+            # 4. 轉換為 RGB
+            I_parallel = I_parallel_spectral @ spectral_to_rgb_matrix.T
+            I_cross    = I_cross_spectral    @ spectral_to_rgb_matrix.T
+
+        # -----------------------------------------------------------
+        # 情況 B: 12 通道 (RGB 模式)
+        # -----------------------------------------------------------
+        elif num_channels == 12:
+            S0 = stokes_image[..., 0:3]
+            S1 = stokes_image[..., 3:6]
+            I_parallel = np.maximum(0.5 * (S0 + S1), 0)
+            I_cross    = np.maximum(0.5 * (S0 - S1), 0)
+            
+        else:
+            # Fallback
+            base_img = stokes_image[..., :3]
+            I_parallel = base_img
+            I_cross = base_img
+
+    # -----------------------------------------------------------
+    # 統一白平衡 (Joint White Balance) - 您的修正
+    # -----------------------------------------------------------
+    def normalize_and_white_balance_joint(img_main, img_secondary):
+        """
+        以 img_main (通常是 I_parallel) 為基準計算白點，
+        並將相同係數套用到 img_secondary，以保留物理強度差異。
+        """
+        # 1. 找出主圖各通道的 99% 亮度位準 (作為白點)
+        p_high = np.percentile(img_main, 99, axis=(0, 1))
+        
+        # 防止過暗或除以零
+        p_high[p_high < 1e-5] = 1e-5
+        
+        # 2. 用「同一組係數」正規化兩張圖
+        img_main_balanced = np.clip(img_main / p_high, 0, 1)
+        img_secondary_balanced = np.clip(img_secondary / p_high, 0, 1)
+        
+        return img_main_balanced, img_secondary_balanced
+
+    # 應用修正後的白平衡邏輯
+    I_parallel, I_cross = normalize_and_white_balance_joint(I_parallel, I_cross)
+
+    # -----------------------------------------------------------
+    # Gamma 校正 (Linear -> sRGB)
+    # -----------------------------------------------------------
+    I_parallel = np.power(I_parallel, 1/2.2)
+    I_cross    = np.power(I_cross, 1/2.2)
+
     return I_parallel, I_cross
 
 
@@ -475,11 +556,66 @@ def render_scene(mi, scene_dict, output_dir, scene_name, save_preview=True):
     print(f"  計算深度圖...")
     # 這裡簡化處理，實際深度需要從場景幾何計算
     
-    # 儲存結果
-    cv2.imwrite(str(output_dir / f"{scene_name}_I_parallel.exr"), 
-                I_parallel.astype(np.float32))
-    cv2.imwrite(str(output_dir / f"{scene_name}_I_cross.exr"), 
-                I_cross.astype(np.float32))
+    # 儲存結果 - 使用多種方式嘗試儲存 EXR
+    def save_exr(filepath, image):
+        """嘗試多種方式儲存 EXR"""
+        filepath = str(filepath)
+        image = image.astype(np.float32)
+        
+        # 方法 1: 嘗試使用 OpenCV
+        try:
+            import os
+            os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
+            cv2.imwrite(filepath, image)
+            return True
+        except Exception:
+            pass
+        
+        # 方法 2: 使用 imageio
+        try:
+            import imageio.v3 as iio
+            # imageio 需要 RGB 順序，OpenCV 是 BGR
+            if len(image.shape) == 3 and image.shape[2] == 3:
+                image_rgb = image[:, :, ::-1]
+            else:
+                image_rgb = image
+            iio.imwrite(filepath, image_rgb)
+            return True
+        except Exception:
+            pass
+        
+        # 方法 3: 使用 OpenEXR (如果安裝了)
+        try:
+            import OpenEXR
+            import Imath
+            h, w = image.shape[:2]
+            header = OpenEXR.Header(w, h)
+            half_chan = Imath.Channel(Imath.PixelType(Imath.PixelType.FLOAT))
+            if len(image.shape) == 3:
+                header['channels'] = {'R': half_chan, 'G': half_chan, 'B': half_chan}
+                out = OpenEXR.OutputFile(filepath, header)
+                out.writePixels({
+                    'R': image[:, :, 2].tobytes(),
+                    'G': image[:, :, 1].tobytes(),
+                    'B': image[:, :, 0].tobytes()
+                })
+            else:
+                header['channels'] = {'Y': half_chan}
+                out = OpenEXR.OutputFile(filepath, header)
+                out.writePixels({'Y': image.tobytes()})
+            out.close()
+            return True
+        except Exception:
+            pass
+        
+        # 方法 4: 退而求其次，儲存為 NPY
+        npy_path = filepath.replace('.exr', '.npy')
+        np.save(npy_path, image)
+        print(f"    警告: 無法儲存 EXR，改存為 {npy_path}")
+        return False
+    
+    save_exr(output_dir / f"{scene_name}_I_parallel.exr", I_parallel)
+    save_exr(output_dir / f"{scene_name}_I_cross.exr", I_cross)
     
     if save_preview:
         def to_uint8(img):
@@ -556,7 +692,10 @@ def batch_render(scene_dir, output_dir, save_preview=False):
     elapsed = time.time() - start_time
     print(f"\n完成！共渲染 {len(results)} 個場景")
     print(f"總耗時: {elapsed:.1f} 秒")
-    print(f"平均: {elapsed/len(results):.2f} 秒/場景")
+    if len(results) > 0:
+        print(f"平均: {elapsed/len(results):.2f} 秒/場景")
+    else:
+        print("警告: 沒有成功渲染任何場景！")
     
     return results
 
@@ -571,16 +710,27 @@ def create_test_scene(mi):
     resolution = CAMERA_CONFIG['output_resolution']
     fov_x = CAMERA_CONFIG['fov_horizontal_deg']
     half_baseline = CAMERA_CONFIG['baseline_mm'] / 2 / 1000
-    look_distance = 0.25
+    
+    # 使用配置的工作距離
+    look_distance = 0.6  # 600mm，對焦點
+    
+    # 光源參數
+    light_width = LIGHT_CONFIG['panel_width_mm'] / 1000
+    light_height = LIGHT_CONFIG['panel_height_mm'] / 1000
     
     scene_dict = {
         'type': 'scene',
         
+        # 使用 Stokes integrator 進行偏振追蹤
         'integrator': {
-            'type': 'path',
-            'max_depth': 8,
+            'type': 'stokes',
+            'nested': {
+                'type': 'path',
+                'max_depth': 12,
+            },
         },
         
+        # 左相機 - 朝向 +Z（場景方向）
         'sensor_left': {
             'type': 'perspective',
             'fov': fov_x,
@@ -599,10 +749,11 @@ def create_test_scene(mi):
             },
             'sampler': {
                 'type': 'independent',
-                'sample_count': 64,
+                'sample_count': 1024,  # RTX 3060Ti 高品質
             },
         },
         
+        # 右相機
         'sensor_right': {
             'type': 'perspective',
             'fov': fov_x,
@@ -621,54 +772,108 @@ def create_test_scene(mi):
             },
             'sampler': {
                 'type': 'independent',
-                'sample_count': 64,
+                'sample_count': 1024,
             },
         },
         
-        # 光源
-        'light': {
-            'type': 'area',
-            'radiance': {'type': 'rgb', 'value': [50, 50, 50]},
-            'shape': {
-                'type': 'rectangle',
-                'to_world': mi.ScalarTransform4f.translate([0, 0.1, 0.1]) @
-                            mi.ScalarTransform4f.rotate([1, 0, 0], -45) @
-                            mi.ScalarTransform4f.scale([0.07, 0.04, 1]),
+        # 偏振 LED 光源 - 55° 入射角
+        # 使用偏振發射器
+        'light_shape': {
+            'type': 'rectangle',
+            'to_world': mi.ScalarTransform4f.translate([0, 0.12, -0.08]) @
+                        mi.ScalarTransform4f.rotate([1, 0, 0], -55) @
+                        mi.ScalarTransform4f.scale([light_width/2, light_height/2, 1]),
+            'bsdf': {
+                'type': 'null',  # 透明，讓光通過
+            },
+            'emitter': {
+                'type': 'area',
+                'radiance': {
+                    'type': 'spectrum',
+                    'value': 150.0,  # 增加亮度
+                },
             },
         },
         
-        # 玻璃板
+        # 偏振片 (放在光源前方) - 0° 水平偏振
+        'polarizer_source': {
+            'type': 'rectangle',
+            'to_world': mi.ScalarTransform4f.translate([0, 0.11, -0.07]) @
+                        mi.ScalarTransform4f.rotate([1, 0, 0], -55) @
+                        mi.ScalarTransform4f.scale([light_width/2 + 0.005, light_height/2 + 0.005, 1]),
+            'bsdf': {
+                'type': 'polarizer',  # 線性偏振片
+                'theta': 0.0,  # 0° = 水平偏振
+            },
+        },
+        
+        # 玻璃板 - 在工作距離範圍內 (528-695mm)
+        # 傾斜角度接近 Brewster angle (~56° for glass)
         'glass_panel': {
             'type': 'rectangle',
-            'to_world': mi.ScalarTransform4f.translate([0, 0, 0.22]) @
-                        mi.ScalarTransform4f.rotate([0, 1, 0], 15) @
-                        mi.ScalarTransform4f.scale([0.04, 0.04, 1]),
+            'to_world': mi.ScalarTransform4f.translate([0.02, 0, 0.60]) @
+                        mi.ScalarTransform4f.rotate([0, 1, 0], 35) @  # Y軸旋轉 35°
+                        mi.ScalarTransform4f.scale([0.06, 0.10, 1]),  # 120x200mm 玻璃門
             'bsdf': {
                 'type': 'dielectric',
                 'int_ior': 1.5,
             },
         },
         
-        # 背景
-        'background': {
+        # 第二塊玻璃 - 不同位置和角度
+        'glass_panel_2': {
             'type': 'rectangle',
-            'to_world': mi.ScalarTransform4f.translate([0, 0, 0.4]) @
-                        mi.ScalarTransform4f.scale([0.2, 0.15, 1]),
+            'to_world': mi.ScalarTransform4f.translate([-0.04, -0.02, 0.55]) @
+                        mi.ScalarTransform4f.rotate([0, 1, 0], -30) @  # 反方向傾斜
+                        mi.ScalarTransform4f.scale([0.04, 0.06, 1]),  # 80x120mm
             'bsdf': {
-                'type': 'diffuse',
-                'reflectance': {'type': 'rgb', 'value': [0.6, 0.6, 0.6]},
+                'type': 'dielectric',
+                'int_ior': 1.5,
             },
         },
         
-        # 地面
-        'ground': {
+        # 背景牆 - Z=750mm
+        'background': {
             'type': 'rectangle',
-            'to_world': mi.ScalarTransform4f.translate([0, -0.08, 0.25]) @
-                        mi.ScalarTransform4f.rotate([1, 0, 0], -90) @
-                        mi.ScalarTransform4f.scale([0.15, 0.2, 1]),
+            'to_world': mi.ScalarTransform4f.translate([0, 0, 0.75]) @
+                        mi.ScalarTransform4f.scale([0.4, 0.3, 1]),  # 800x600mm
             'bsdf': {
                 'type': 'diffuse',
-                'reflectance': {'type': 'rgb', 'value': [0.4, 0.35, 0.3]},
+                'reflectance': {'type': 'rgb', 'value': [0.7, 0.65, 0.6]},  # 米色牆
+            },
+        },
+        
+        # 地面 - 場景中心高度
+        'ground': {
+            'type': 'rectangle',
+            'to_world': mi.ScalarTransform4f.translate([0, -0.10, 0.6]) @
+                        mi.ScalarTransform4f.rotate([1, 0, 0], -90) @
+                        mi.ScalarTransform4f.scale([0.3, 0.3, 1]),  # 600x600mm
+            'bsdf': {
+                'type': 'diffuse',
+                'reflectance': {'type': 'rgb', 'value': [0.4, 0.35, 0.3]},  # 木地板色
+            },
+        },
+        
+        # 書架 (背景傢俱)
+        'bookshelf': {
+            'type': 'cube',
+            'to_world': mi.ScalarTransform4f.translate([-0.08, 0, 0.72]) @
+                        mi.ScalarTransform4f.scale([0.04, 0.09, 0.015]),  # 80x180x30mm
+            'bsdf': {
+                'type': 'diffuse',
+                'reflectance': {'type': 'rgb', 'value': [0.35, 0.25, 0.15]},  # 深木色
+            },
+        },
+        
+        # 桌子
+        'table': {
+            'type': 'cube',
+            'to_world': mi.ScalarTransform4f.translate([0.06, -0.075, 0.65]) @
+                        mi.ScalarTransform4f.scale([0.04, 0.0225, 0.025]),  # 80x45x50mm
+            'bsdf': {
+                'type': 'diffuse',
+                'reflectance': {'type': 'rgb', 'value': [0.45, 0.35, 0.25]},  # 淺木色
             },
         },
     }

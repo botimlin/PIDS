@@ -123,17 +123,17 @@ SCENE_CONFIG = {
 # ============================================================
 
 RENDER_CONFIG = {
-    # Mitsuba variant
-    'mitsuba_variant': 'cuda_ad_rgb_polarized',
-    'fallback_variant': 'scalar_rgb_polarized',
+    # Mitsuba variant (偏振渲染需要 spectral_polarized)
+    'mitsuba_variant': 'cuda_ad_spectral_polarized',
+    'fallback_variant': 'scalar_spectral_polarized',
     
-    # 採樣數 (品質 vs 速度權衡)
-    'samples_preview': 64,      # 預覽用
-    'samples_training': 256,    # 訓練數據
-    'samples_high_quality': 1024,  # 高品質驗證
+    # 採樣數 (品質 vs 速度權衡) - RTX 3060Ti 優化
+    'samples_preview': 128,       # 預覽用
+    'samples_training': 1024,     # 訓練數據 (高品質)
+    'samples_high_quality': 2048, # 高品質驗證
     
     # 路徑追蹤深度
-    'max_depth': 8,  # 足夠處理玻璃的多次反射/折射
+    'max_depth': 12,  # 增加深度，更好處理玻璃多次反射
     
     # 輸出格式
     'output_format': 'exr',  # HDR 格式保留完整動態範圍
