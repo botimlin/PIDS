@@ -1,15 +1,13 @@
 """
-PIDS (Physics-Informed Deep Stereo) 系統配置 (修正版)
+PIDS (Physics-Informed Deep Stereo) 系統配置
 =============================================
 
 此檔案定義所有硬體參數和渲染設定。
-修正項目: 加入 RENDER_CONFIG['spp'] 參數以支援新版渲染器。
+更新日期: 2024
 """
 
-import numpy as np
-
 # ============================================================
-# 1. 相機配置 (Sony IMX296LQR-C)
+# 相機配置 (Sony IMX296LQR-C)
 # ============================================================
 
 CAMERA_CONFIG = {
@@ -39,160 +37,271 @@ CAMERA_CONFIG = {
     # 工作範圍 (F1.2 光圈景深限制)
     'min_distance_mm': 528.0,
     'max_distance_mm': 695.0,
+    
+    # 對焦距離
     'focus_distance_mm': 600.0,
-    'f_number': 1.2,
 }
 
 # ============================================================
-# 2. 光源配置 (LED 面板)
+# 光源配置 (Godox Litemons C30Bi)
 # ============================================================
 
 LIGHT_CONFIG = {
-    # 光源類型
-    'type': 'polarized_panel',
+    'model': 'Godox Litemons C30Bi',
+    'power_w': 30,
+    'lux_at_0_5m': 8610,
+    'cct_range_k': (2800, 6500),
+    'cri': 94,
+    'tlci': 96,
     
-    # 光源位置 (相對於世界原點)
-    # 放在左上方打光，製造偏振反射
-    'position_mm': (-150, 0, 200), 
-    'target_mm': (0, 600, 0),
+    # 面板尺寸
+    'panel_width_mm': 135,
+    'panel_height_mm': 79,
     
-    # 強度 (Watts/sr)
-    'intensity_watts_sr': 50.0,
+    # 偏振片配置
+    'source_polarizer_angle_deg': 0,  # 光源端偏振片角度
     
-    # 物理偏振角度 (相對於垂直線)
-    # 90度 = 水平偏振 (S-polarization 對於桌面)
-    'polarization_angle_deg': 90.0,
+    # 預設色溫 (用於模擬)
+    'default_cct_k': 5600,
     
-    # 入射角 (接近 Brewster Angle 56度效果最好)
-    'incidence_angle_deg': 55.0,
+    # 光源位置 (相對於相機原點)
+    'position_offset_mm': {
+        'x': 0,      # 水平置中
+        'y': 120,    # 相機上方 120mm
+        'z': -80,    # 相機後方 80mm
+    },
     
-    # 色溫範圍 (用於隨機化)
-    'cct_range_k': (4000, 6500),
-    
-    # 面板尺寸 (用於面積光模擬)
-    'panel_width_mm': 300,
-    'panel_height_mm': 300,
+    # 入射角度 (Brewster angle = 56.3°, 使用 55° 方便調整)
+    'incidence_angle_deg': 55,
 }
 
 # ============================================================
-# 3. 偏振相機配置 (Polarization)
+# 偏振配置
 # ============================================================
 
 POLARIZATION_CONFIG = {
-    # 左相機 (I_parallel): 分析器與光源平行 (看穿/最強反射)
-    'left_analyzer_angle_deg': 90.0,
+    # 左相機 (I∥): 平行偏振，保留鏡面反射
+    'left_analyzer_angle_deg': 0,
     
-    # 右相機 (I_cross): 分析器與光源垂直 (過濾反射)
-    'right_analyzer_angle_deg': 0.0,
+    # 右相機 (I⊥): 正交偏振，抑制鏡面反射  
+    'right_analyzer_angle_deg': 90,
     
-    # 偏振片效率 (0.0~1.0)
-    'extinction_ratio': 1000.0, # 1000:1
+    # 偏振片透射係數 (理想值約 0.5)
+    'polarizer_transmission': 0.5,
 }
 
 # ============================================================
-# 4. 場景幾何配置 (Scene)
+# 場景配置 (1:10 縮尺居家場景)
 # ============================================================
 
 SCENE_CONFIG = {
-    # 單位比例 (Blender Unit -> Meters)
-    # 1 Unit = 1mm = 0.001m
-    'unit_scale': 0.001,
+    'scale_ratio': 0.1,  # 1:10 縮尺
     
-    # 地面與背景牆位置
-    'ground_y_mm': 600.0,
-    'wall_z_mm': 750.0,
+    # 玻璃材質
+    'glass_ior': 1.5,  # 標準玻璃折射率
+    'glass_thickness_mm': 0.5,  # 模型玻璃厚度 (真實 5mm)
+    
+    # 場景範圍 (mm) - 模型尺寸
+    'scene_depth_range_mm': (528, 695),  # 工作距離 (F1.2 景深限制)
+    'scene_width_mm': 250,   # 對應真實 2.5m
+    'scene_height_mm': 200,  # 對應真實 2m
+    'scene_depth_mm': 200,   # 場景深度 ~170mm + 餘量
+    
+    # 3D 列印底座尺寸
+    'print_bed_size_mm': 256,
+    
+    # 對應真實世界 (僅供參考)
+    'real_world_equiv': {
+        'distance_m': (5.3, 6.9),   # 真實工作距離
+        'fov_width_m': (4.4, 5.8),  # 真實視野寬度
+        'baseline_mm': 300,         # 等效真實基線
+    },
 }
 
 # ============================================================
-# 5. 渲染設定 (Render) - [修正重點]
+# 渲染配置
 # ============================================================
 
 RENDER_CONFIG = {
-    # [新增] 採樣數 (Samples Per Pixel)
-    # 64: 快速預覽, 128: 標準, 256+: 高畫質
-    'spp': 64,
+    # Mitsuba variant (偏振渲染需要 spectral_polarized)
+    'mitsuba_variant': 'cuda_ad_spectral_polarized',
+    'fallback_variant': 'scalar_spectral_polarized',
     
-    # 光線彈射次數
-    'max_depth': 8,
+    # 採樣數 (品質 vs 速度權衡) - RTX 3060Ti 優化
+    'samples_preview': 128,       # 預覽用
+    'samples_training': 1024,     # 訓練數據 (高品質)
+    'samples_high_quality': 2048, # 高品質驗證
     
-    # 積分器類型
-    'integrator': 'path',
+    # 路徑追蹤深度
+    'max_depth': 12,  # 增加深度，更好處理玻璃多次反射
+    
+    # 輸出格式
+    'output_format': 'exr',  # HDR 格式保留完整動態範圍
+    'output_dtype': 'float32',
 }
 
 # ============================================================
-# 6. 數據生成配置 (Data)
+# 數據生成配置
 # ============================================================
 
 DATA_CONFIG = {
-    'dataset_name': 'PIDS_Synthetic_v1',
-    'train_split': 0.8,
-    'val_split': 0.1,
-    'test_split': 0.1,
+    # 輸出目錄
+    'output_dir': './training_data',
+    
+    # 數據集大小 (可調整)
+    'num_training_samples': 5000,
+    'num_validation_samples': 500,
+    'num_test_samples': 500,
+    
+    # 場景隨機化範圍 (1:10 縮尺，單位 mm)
+    # 工作距離: 528-695mm
+    'glass_position_range': {
+        'x_mm': (-80, 80),     # 配合 250mm 場景寬度
+        'y_mm': (-60, 60),     # 配合 200mm 場景高度
+        'z_mm': (528, 695),    # 工作距離範圍 (F1.2 景深)
+    },
+    'glass_rotation_range': {
+        'y_deg': (-30, 30),    # 水平旋轉
+        'x_deg': (-15, 15),    # 俯仰
+    },
+    'glass_size_range': {
+        'width_mm': (5, 60),   # 模型尺寸 (真實 50-600mm)
+        'height_mm': (5, 80),  # 模型尺寸 (真實 50-800mm)
+    },
+    'light_intensity_range': (0.5, 1.5),  # 相對強度
+    'background_color_range': (0.2, 0.8),  # RGB 各通道
+    
+    # ========================================
+    # 環境光配置 (Domain Randomization)
+    # ========================================
+    # Phase 1: 關閉環境光，驗證系統可行性
+    # Phase 2: 開啟環境光，提升泛化能力
+    'ambient_light': {
+        'enabled': False,  # 預設關閉
+        'intensity_range': (0.0, 0.1),  # LED 強度的 0-10%
+        'color_temp_range_k': (4000, 6500),  # 色溫範圍
+    },
+    
+    # 1:10 縮尺參考 (模型 → 真實)
+    # 訓練策略：優先使用大型平面透明物體
+    'scale_reference': {
+        # 大型透明物體（訓練用）
+        'glass_door_model_mm': (90, 150),     # 真實 0.9 × 1.5 m
+        'glass_window_model_mm': (100, 80),   # 真實 1.0 × 0.8 m
+        'glass_partition_model_mm': (50, 40), # 真實 0.5 × 0.4 m
+        'glass_table_model_mm': (80, 80),     # 真實 0.8 × 0.8 m
+        'glass_cabinet_model_mm': (40, 60),   # 真實 0.4 × 0.6 m
+        'glass_wall_model_mm': (120, 100),    # 真實 1.2 × 1.0 m
+        
+        # 背景家具
+        'bookshelf_model_mm': 80,     # 真實 800mm
+        'door_height_model_mm': 210,  # 真實 2100mm (2.1m)
+        
+        # 小型透明物體（真實部署測試用，模擬階段不需要）
+        # 'glass_cup_model_mm': 7,    # 留待 1:1 真實測試
+        # 'glass_bottle_model_mm': 8, # 留待 1:1 真實測試
+    },
 }
 
 # ============================================================
-# 輔助函式
+# 視差計算
 # ============================================================
 
 def compute_disparity_range():
     """
-    計算視差範圍 (Disparity Range)
-    formula: d = (f * B) / Z
+    計算視差範圍
+    
+    disparity (pixels) = baseline * focal_length / depth
+    
+    注意：這裡的 focal_length 需要轉換為像素單位
     """
-    f_mm = CAMERA_CONFIG['focal_length_mm']
-    B_mm = CAMERA_CONFIG['baseline_mm']
+    # 原始感測器的 focal length in pixels
+    focal_length_pixels_native = (
+        CAMERA_CONFIG['focal_length_mm'] / 
+        (CAMERA_CONFIG['pixel_size_um'] / 1000)
+    )  # 6 / 0.00345 = 1739.13 pixels
     
-    # 感測器寬度 (mm)
-    sensor_w = CAMERA_CONFIG['sensor_width_mm']
-    # 輸出寬度 (pixels)
-    img_w = CAMERA_CONFIG['output_resolution'][0]
+    # Resize 後的等效 focal length
+    scale_x = CAMERA_CONFIG['output_resolution'][0] / CAMERA_CONFIG['native_resolution'][0]
+    focal_length_pixels = focal_length_pixels_native * scale_x  # 1739.13 * (640/1456) = 764.4 pixels
     
-    # 焦距轉換為像素單位
-    # f_pix = f_mm * (img_w / sensor_w)
-    f_pixel = f_mm * (img_w / sensor_w)
+    baseline_mm = CAMERA_CONFIG['baseline_mm']
     
-    Z_min = CAMERA_CONFIG['min_distance_mm']
-    Z_max = CAMERA_CONFIG['max_distance_mm']
+    # 最大視差 (最近距離)
+    min_depth_mm = CAMERA_CONFIG['min_distance_mm']
+    max_disparity = (baseline_mm * focal_length_pixels) / min_depth_mm
     
-    max_disp = (f_pixel * B_mm) / Z_min
-    min_disp = (f_pixel * B_mm) / Z_max
+    # 最小視差 (最遠距離)
+    max_depth_mm = CAMERA_CONFIG['max_distance_mm']
+    min_disparity = (baseline_mm * focal_length_pixels) / max_depth_mm
     
     return {
-        'focal_length_pixels': f_pixel,
-        'min_disparity': min_disp,
-        'max_disparity': max_disp,
-        'disparity_range': max_disp - min_disp
+        'focal_length_pixels': focal_length_pixels,
+        'min_disparity': min_disparity,
+        'max_disparity': max_disparity,
+        'disparity_range': max_disparity - min_disparity,
     }
 
+
+def depth_to_disparity(depth_mm):
+    """將深度 (mm) 轉換為視差 (pixels)"""
+    info = compute_disparity_range()
+    return (CAMERA_CONFIG['baseline_mm'] * info['focal_length_pixels']) / depth_mm
+
+
+def disparity_to_depth(disparity):
+    """將視差 (pixels) 轉換為深度 (mm)"""
+    info = compute_disparity_range()
+    return (CAMERA_CONFIG['baseline_mm'] * info['focal_length_pixels']) / disparity
+
+
 # ============================================================
-# 自我測試與資訊顯示
+# 打印配置摘要
 # ============================================================
 
-if __name__ == "__main__":
+def print_config_summary():
+    """打印配置摘要"""
     disp_info = compute_disparity_range()
     
-    print("="*60)
-    print("PIDS 系統配置資訊")
-    print("="*60)
+    print("=" * 60)
+    print("PIDS 系統配置摘要")
+    print("=" * 60)
     
-    print("\n【相機參數】")
-    print(f"  型號: {CAMERA_CONFIG['sensor_name']}")
+    print("\n【相機配置】")
+    print(f"  感測器: {CAMERA_CONFIG['sensor_name']}")
+    print(f"  原始解析度: {CAMERA_CONFIG['native_resolution'][0]} × {CAMERA_CONFIG['native_resolution'][1]}")
+    print(f"  輸出解析度: {CAMERA_CONFIG['output_resolution'][0]} × {CAMERA_CONFIG['output_resolution'][1]}")
     print(f"  焦距: {CAMERA_CONFIG['focal_length_mm']} mm")
+    print(f"  FOV: {CAMERA_CONFIG['fov_horizontal_deg']:.1f}° × {CAMERA_CONFIG['fov_vertical_deg']:.1f}°")
     print(f"  基線: {CAMERA_CONFIG['baseline_mm']} mm")
-    print(f"  解析度: {CAMERA_CONFIG['output_resolution']}")
-    print(f"  FOV (H/V): {CAMERA_CONFIG['fov_horizontal_deg']}° / {CAMERA_CONFIG['fov_vertical_deg']}°")
     
-    print("\n【光源參數】")
-    print(f"  強度: {LIGHT_CONFIG['intensity_watts_sr']} W/sr")
-    print(f"  位置: {LIGHT_CONFIG['position_mm']} mm")
-    print(f"  偏振角: {LIGHT_CONFIG['polarization_angle_deg']}°")
+    print("\n【光源配置】")
+    print(f"  型號: {LIGHT_CONFIG['model']}")
+    print(f"  功率: {LIGHT_CONFIG['power_w']}W")
+    print(f"  亮度: {LIGHT_CONFIG['lux_at_0_5m']} Lux @ 0.5m")
+    print(f"  色溫範圍: {LIGHT_CONFIG['cct_range_k'][0]}K - {LIGHT_CONFIG['cct_range_k'][1]}K")
+    print(f"  面板尺寸: {LIGHT_CONFIG['panel_width_mm']} × {LIGHT_CONFIG['panel_height_mm']} mm")
     
-    print("\n【渲染參數】")
-    print(f"  SPP (採樣數): {RENDER_CONFIG['spp']}")
-    print(f"  Max Depth: {RENDER_CONFIG['max_depth']}")
+    print("\n【偏振配置】")
+    print(f"  光源偏振: {POLARIZATION_CONFIG['left_analyzer_angle_deg']}°")
+    print(f"  左相機 (I∥): {POLARIZATION_CONFIG['left_analyzer_angle_deg']}° 分析器")
+    print(f"  右相機 (I⊥): {POLARIZATION_CONFIG['right_analyzer_angle_deg']}° 分析器")
+    print(f"  光源入射角: {LIGHT_CONFIG['incidence_angle_deg']}° (Brewster ≈ 56.3°)")
     
-    print("\n【視差計算】")
-    print(f"  等效焦距: {disp_info['focal_length_pixels']:.1f} px")
-    print(f"  工作距離: {CAMERA_CONFIG['min_distance_mm']} ~ {CAMERA_CONFIG['max_distance_mm']} mm")
-    print(f"  視差範圍: {disp_info['min_disparity']:.1f} ~ {disp_info['max_disparity']:.1f} px")
-    print("="*60)
+    print("\n【視差範圍】")
+    print(f"  等效焦距: {disp_info['focal_length_pixels']:.1f} pixels")
+    print(f"  工作距離: {CAMERA_CONFIG['min_distance_mm']} - {CAMERA_CONFIG['max_distance_mm']} mm")
+    print(f"  視差範圍: {disp_info['min_disparity']:.1f} - {disp_info['max_disparity']:.1f} pixels")
+    print(f"  視差跨度: {disp_info['disparity_range']:.1f} pixels")
+    
+    print("\n【縮尺配置】")
+    print(f"  縮尺比例: 1:{int(1/SCENE_CONFIG['scale_ratio'])}")
+    print(f"  場景尺寸: {SCENE_CONFIG['scene_width_mm']} × {SCENE_CONFIG['scene_height_mm']} mm (模型)")
+    print(f"  對應真實: {SCENE_CONFIG['scene_width_mm']/SCENE_CONFIG['scale_ratio']/1000:.1f} × {SCENE_CONFIG['scene_height_mm']/SCENE_CONFIG['scale_ratio']/1000:.1f} m")
+    print(f"  等效工作距離: {CAMERA_CONFIG['min_distance_mm']/SCENE_CONFIG['scale_ratio']/1000:.1f} - {CAMERA_CONFIG['max_distance_mm']/SCENE_CONFIG['scale_ratio']/1000:.1f} m")
+    
+    print("\n" + "=" * 60)
+
+
+if __name__ == '__main__':
+    print_config_summary()
