@@ -273,6 +273,14 @@ def load_obj_scene(mi, obj_path, samples=None):
             # 注意：OBJ 的材質會被忽略，需要手動指定
             # 或使用下面的 shape group 方式
         },
+
+        'imported_scene': {
+            'type': 'obj',
+            'filename': str(obj_path),
+            
+            # ★★★ 關鍵修正：將 mm (Blender) 轉為 m (Mitsuba) ★★★
+            'to_world': mi.ScalarTransform4f.scale([0.001, 0.001, 0.001]),
+        },
     }
     
     return scene_dict
@@ -391,6 +399,9 @@ def load_obj_with_materials(mi, obj_path, mtl_mapping=None):
             'filename': str(obj_path),
             'shape_group': group_name,
             'bsdf': material,
+            
+            # ★★★ 關鍵修正：加入縮放 ★★★
+            'to_world': mi.ScalarTransform4f.scale([0.001, 0.001, 0.001]),
         }
     
     return scene_dict
@@ -654,8 +665,9 @@ def render_obj_scene(obj_path, output_dir, save_preview=True):
     
     print(f"\n處理場景: {scene_name}")
     
-    # 載入場景
-    scene_dict = load_obj_scene(mi, obj_path)
+    # [修改] 改用 load_obj_with_materials 以支援玻璃材質
+    # 這樣玻璃才會透明，傢俱才會有顏色
+    scene_dict = load_obj_with_materials(mi, obj_path)
     
     # 渲染
     result = render_scene(mi, scene_dict, output_dir, scene_name, save_preview)

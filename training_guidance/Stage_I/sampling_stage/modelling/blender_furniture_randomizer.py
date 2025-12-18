@@ -1,11 +1,10 @@
 """
-PIDS Blender 傢俱隨機擺放腳本 (v14.0 - 批次量產/獨立輸出版)
+PIDS Blender 傢俱隨機擺放腳本 (v15.0 - 自動落地版)
 ===================================================
-功能:
-1. 讀取 Source 物件。
-2. 根據設定數量 (num_scenes_per_run) 進行迴圈。
-3. 生成場景 -> 匯出 OBJ (保留座標) -> 刪除生成物 -> 下一個。
-4. 自動遞增檔名 (scene_0001, scene_0002...) 且不覆蓋舊檔。
+功能升級:
+1. [自動落地] 新增 snap_to_ground 函式，計算物件最低點並強制貼地 (Z=0)。
+2. [修正] 移除原本依賴中心點高度的放置邏輯，改為物理邊界偵測。
+3. [繼承] 保留防穿模 (AABB)、量產輸出、座標保留等所有功能。
 """
 
 import bpy
@@ -13,25 +12,22 @@ import math
 import random
 import os
 import re
+from mathutils import Vector # 需要引入 Vector 進行頂點運算
 
 # ============================================================
 # 1. 配置參數
 # ============================================================
 
 CONFIG = {
-    # [設定] 這次按下執行要產生幾個場景？
     'num_scenes_per_run': 10, 
-    
-    # [設定] 檔案要存在哪裡？(建議用絕對路徑，或保持預設)
-    # 如果路徑不存在，腳本會自動建立
-    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS\\PIDS\\training_guidance\\Stage_I\\Models\\scenes',
+    'output_dir': 'C:/Temp/PIDS_Dataset_Output',
     
     'scene': {
-        'width': 250,
-        'y_min': 528,   
-        'y_max': 695,   
-        'y_bg_base': 730,
-        'y_bg_jitter': (-10, 10),
+        'width': 250,      
+        'y_min': 528,      
+        'y_max': 695,      
+        'y_bg_base': 730,  
+        'y_bg_jitter': (-10, 10), 
     },
     
     'glass_objects': {
@@ -56,33 +52,50 @@ CONFIG = {
     },
     
     'randomization': {
-        'initial_max_scale': 1.05,
-        'min_scale_limit': 0.6,
-        'glass_rotation_y': (-30, 30),
-        'glass_rotation_x': (-5, 5),
-        'furniture_rotation_z': (-15, 15),
+        'initial_max_scale': 1.05,     
+        'min_scale_limit': 0.6,        
+        'glass_rotation_y': (-30, 30), 
+        'glass_rotation_x': (-5, 5),   
+        'furniture_rotation_z': (-15, 15), 
     },
 }
 
 # ============================================================
-# 2. 核心數學 (防穿模)
+# 2. 核心數學與物理
 # ============================================================
 
 def get_rotated_size(w, d, angle_rad):
+    """計算旋轉後的 2D 佔用尺寸 (防穿模用)"""
     abs_cos = abs(math.cos(angle_rad))
     abs_sin = abs(math.sin(angle_rad))
     new_w = w * abs_cos + d * abs_sin
     new_d = w * abs_sin + d * abs_cos
     return new_w, new_d
 
+def snap_to_ground(obj):
+    """
+    [關鍵新功能] 強制將物件貼地
+    計算物件世界座標中 bounding box 的最低 Z 值，然後向下移動該距離。
+    """
+    # 強制更新視圖層，確保矩陣運算正確
+    bpy.context.view_layer.update()
+    
+    # 取得物件的 8 個角落的世界座標
+    world_corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    
+    # 找出最低的 Z 值
+    min_z = min([c.z for c in world_corners])
+    
+    # 將物件向下(或向上)移動，使最低點剛好在 Z=0
+    obj.location.z -= min_z
+
 # ============================================================
-# 3. 檔案與目錄管理
+# 3. 檔案管理
 # ============================================================
 
 def ensure_directory(directory):
     if not os.path.exists(directory):
         os.makedirs(directory)
-        print(f"[系統] 建立輸出目錄: {directory}")
 
 def get_next_start_index(directory):
     ensure_directory(directory)
@@ -112,22 +125,25 @@ def validate_and_setup_sources():
         source_name = f"source_{target_name}"
         obj = bpy.data.objects.get(source_name)
         if obj:
-            # 確保 Source 物件不被選取、不被渲染，但存在於場景中
             obj.hide_render = True
-            obj.hide_viewport = False # 方便除錯，可視情況改 True
+            obj.hide_viewport = False
             
             bpy.ops.object.select_all(action='DESELECT')
             obj.select_set(True)
             bpy.context.view_layer.objects.active = obj
+            
+            # 應用旋轉與縮放，但不應用位置 (以免原點跑掉，雖然現在有 snap 機制比較沒差了)
             bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
             
-            # 標準化尺寸計算
             current_h = obj.dimensions.z
             target_h = f_type['size'][2]
             if current_h > 0.001:
                 scale_factor = target_h / current_h
                 obj.scale = (scale_factor, scale_factor, scale_factor)
                 bpy.ops.object.transform_apply(scale=True)
+                
+                # 重新設定原點至幾何中心 (方便後續旋轉)
+                bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
                 
                 f_type['real_size'] = (obj.dimensions.x, obj.dimensions.y, obj.dimensions.z)
                 valid_furniture_types.append(f_type)
@@ -137,13 +153,10 @@ def validate_and_setup_sources():
     return valid_furniture_types
 
 def clear_generated_objects():
-    """刪除所有自動生成的物件，保留 Source 和環境"""
     bpy.ops.object.select_all(action='DESELECT')
     for obj in bpy.data.objects:
-        # 邏輯：只要名字不是 source 開頭，也不是背景(ground/bg)，且是 MESH，就刪除
         if not obj.name.startswith(('ground_', 'bg_', 'source_')) and obj.type == 'MESH':
             obj.select_set(True)
-    
     if bpy.context.selected_objects:
         bpy.ops.object.delete()
 
@@ -176,7 +189,7 @@ def check_overlap(new_pos, new_size_rotated, existing_objects, margin=5):
     return False
 
 # ============================================================
-# 5. 生成邏輯 (Generate)
+# 5. 生成邏輯
 # ============================================================
 
 def create_glass_object_safe(glass_type, index, existing_objects):
@@ -196,8 +209,9 @@ def create_glass_object_safe(glass_type, index, existing_objects):
         rand_x = random.uniform(-x_range, x_range)
         y_pos = random.uniform(CONFIG['scene']['y_min'], CONFIG['scene']['y_max'])
         
+        # 碰撞檢查 (Z軸忽略，只要XY不重疊)
         if not check_overlap((rand_x, y_pos, 0), (rotated_w, rotated_d, h), existing_objects, margin=5):
-            valid_pos = (rand_x, y_pos, h/2)
+            valid_pos = (rand_x, y_pos, 0) # 暫時設 Z=0
             final_rot_z = rot_z
             break
             
@@ -211,10 +225,18 @@ def create_glass_object_safe(glass_type, index, existing_objects):
     
     obj.scale = (w, d, h)
     obj.location = valid_pos
+    
+    # 應用旋轉
     rot_x = math.radians(random.uniform(*CONFIG['randomization']['glass_rotation_x']))
     obj.rotation_euler = (rot_x, 0, final_rot_z)
     
+    # [修正] 不要在這裡應用 Scale，因為 snap_to_ground 需要正確的邊界盒
+    # 先做 snap
+    snap_to_ground(obj)
+    
+    # 最後再 Apply Scale (習慣動作，確保匯出時 scale 為 1)
     bpy.ops.object.transform_apply(scale=True)
+    
     return obj, valid_pos, (rotated_w, rotated_d, h)
 
 def create_furniture_adaptive_safe(furniture_type, index, existing_objects, current_scene_y_center):
@@ -266,106 +288,67 @@ def create_furniture_adaptive_safe(furniture_type, index, existing_objects, curr
     
     new_obj.name = f"diffuse_{name}_{index:02d}"
     new_obj.scale = (final_scale, final_scale, final_scale)
-    new_obj.location = (valid_pos[0], valid_pos[1], current_h/2)
+    new_obj.location = (valid_pos[0], valid_pos[1], 0) # 先放在 Z=0
     new_obj.rotation_euler = (0, 0, final_rot_z)
+    
+    # [修正] 使用自動落地函式
+    snap_to_ground(new_obj)
     
     return new_obj, valid_pos, (final_rotated_w, final_rotated_d, current_h)
 
 # ============================================================
-# 6. 主控流程 (Main Loop)
+# 6. 主控流程
 # ============================================================
 
 def export_current_selection(scene_id, base_dir):
-    """
-    將當前選取的物件匯出為 OBJ
-    """
     filename = f"scene_{scene_id:04d}.obj"
     filepath = os.path.join(base_dir, filename)
-    
-    # 這裡的設定確保座標保留
-    # use_selection=True: 只匯出我們選中的生成的傢俱
-    # apply_modifiers=True: 確保幾何體正確
-    # forward/up: 配合一般 3D 軟體習慣 (Y向前, Z向上)，這保留了 Blender 的座標系視覺感
-    
     print(f"  -> 正在匯出: {filename} ...")
-    
     try:
-        # Blender 3.6+ 新版 OBJ 匯出器
-        bpy.ops.wm.obj_export(
-            filepath=filepath,
-            export_selected_objects=True,
-            forward_axis='NEGATIVE_Y', 
-            up_axis='Z',
-            apply_modifiers=True
-        )
+        bpy.ops.wm.obj_export(filepath=filepath, export_selected_objects=True, forward_axis='NEGATIVE_Y', up_axis='Z', apply_modifiers=True)
     except AttributeError:
-        # 舊版 Blender 備用
-        bpy.ops.export_scene.obj(
-            filepath=filepath, 
-            use_selection=True, 
-            axis_forward='-Y', 
-            axis_up='Z'
-        )
+        bpy.ops.export_scene.obj(filepath=filepath, use_selection=True, axis_forward='-Y', axis_up='Z')
 
 def main():
-    # 1. 初始化路徑
     output_dir = CONFIG['output_dir']
-    
-    # 2. 準備 Source
     valid_types = validate_and_setup_sources()
-    
-    # 3. 計算本次任務的起始與結束 ID
     start_idx = get_next_start_index(output_dir)
     end_idx = start_idx + CONFIG['num_scenes_per_run']
     
-    print(f"\n=== PIDS 批次生成開始 ===")
-    print(f"目標: 生成 {CONFIG['num_scenes_per_run']} 個場景")
-    print(f"編號範圍: {start_idx:04d} ~ {end_idx-1:04d}")
-    print(f"輸出目錄: {output_dir}\n")
+    print(f"\n=== PIDS 批次生成開始 (v15.0 自動落地版) ===")
     
-    # 4. 批次迴圈
     for i in range(start_idx, end_idx):
-        # A. 清除上一輪的物件
         clear_generated_objects()
-        
-        # B. 生成新場景
         occupied = []
         jitter_min, jitter_max = CONFIG['scene']['y_bg_jitter']
         scene_y_center = CONFIG['scene']['y_bg_base'] + random.uniform(jitter_min, jitter_max)
         
-        # 生成玻璃
+        # 生成物件
         for g_idx in range(random.randint(*CONFIG['glass_objects']['count_range'])):
             g_type = random.choice(CONFIG['glass_objects']['types'])
             obj, pos, size = create_glass_object_safe(g_type, g_idx+1, occupied)
             if obj: occupied.append((pos, size))
             
-        # 生成傢俱
         if valid_types:
             target_num = random.randint(*CONFIG['furniture']['count_range'])
             actual_num = min(target_num, len(valid_types))
             selected_types = random.sample(valid_types, actual_num)
             selected_types.sort(key=lambda x: x['real_size'][0] * x['real_size'][1], reverse=True)
-            
             for f_idx, f_type in enumerate(selected_types):
                 obj, pos, size = create_furniture_adaptive_safe(f_type, f_idx+1, occupied, scene_y_center)
                 if obj: occupied.append((pos, size))
         
-        # C. 選取生成的物件 (準備匯出)
+        # 匯出
         bpy.ops.object.select_all(action='DESELECT')
         has_selection = False
         for obj in bpy.data.objects:
-            # 只選取新生成的 (diffuse_開頭 或 glass_開頭)
             if obj.name.startswith(('diffuse_', 'glass_')) and obj.type == 'MESH':
                 obj.select_set(True)
                 has_selection = True
         
-        # D. 執行匯出
-        if has_selection:
-            export_current_selection(i, output_dir)
-        else:
-            print(f"  [警示] 場景 {i} 生成失敗或為空，跳過匯出。")
+        if has_selection: export_current_selection(i, output_dir)
+        else: print(f"  [警示] 場景 {i} 為空。")
 
-    # 5. 收尾：再清除一次最後的場景，保持乾淨 (可選)
     clear_generated_objects()
     print(f"\n=== 全部完成 ===")
 
