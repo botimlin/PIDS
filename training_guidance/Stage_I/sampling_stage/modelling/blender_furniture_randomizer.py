@@ -20,7 +20,7 @@ from mathutils import Vector
 
 CONFIG = {
     'num_scenes_per_run': 10, 
-    'output_dir': 'C:/Temp/PIDS_Dataset_Output',
+    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes',
     
     'scene': {
         'width': 250,      
