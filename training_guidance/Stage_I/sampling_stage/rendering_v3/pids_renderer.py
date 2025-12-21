@@ -96,14 +96,20 @@ class Config:
     LED_POSITION_Y = 280.0          # LED 高度 (chamber 頂部附近)
     LED_POSITION_Z = 420.0          # LED 深度 (相機前方)
 
-    # 環境光（constant emitter = 真正非偏振光，但被 chamber 擋住）
-    AMBIENT_INTENSITY = 0.01        # 環境光強度（chamber 內無效）
+    # 環境光
+    AMBIENT_INTENSITY = 0.0 # 已停用，由天花板發光體取代
 
-    # 天花板光源（獨立面光源，在 chamber 內部頂部）
-    CEILING_LIGHT_INTENSITY = 1500.0  # 天花板光源強度
-    CEILING_LIGHT_SIZE = (400.0, 350.0)  # 天花板光源尺寸 (寬, 深)
-    CEILING_LIGHT_Z = 295.0          # 天花板光源高度（略低於天花板）
-    CEILING_LIGHT_Y = 625.0          # 天花板光源深度（chamber 中心）
+    # 天花板燈陣列（獨立光源，不依賴材質偵測）
+    CEILING_LIGHTS_ENABLED = False # 已停用，改為將天花板直接設為發光體
+    CEILING_EMITTER_INTENSITY = 20.0 # 將天花板作為發光體的強度
+
+    # 四個燈的位置 (OBJ 座標)
+    CEILING_LIGHT_POSITIONS = [
+        (-150.0, 550.0, 295.0),  # 左前
+        (150.0, 550.0, 295.0),   # 右前
+        (-150.0, 750.0, 295.0),  # 左後
+        (150.0, 750.0, 295.0),   # 右後
+    ]
 
     # 材質
     GLASS_IOR = 1.5                 # 玻璃折射率
@@ -439,13 +445,6 @@ class SceneBuilder:
 
         # 添加光源
         scene['led_light'] = self._create_led_light(camera_position)
-        scene['ceiling_light'] = self._create_ceiling_light()
-
-        # 添加環境光
-        scene['ambient'] = {
-            'type': 'constant',
-            'radiance': {'type': 'spectrum', 'value': Config.AMBIENT_INTENSITY},
-        }
 
         # 添加分離的 OBJ 網格
         for name, mesh_dict in self._create_meshes():
@@ -497,7 +496,11 @@ class SceneBuilder:
         }
 
     def _create_led_light(self, camera_pos: Tuple[float, float, float]) -> Dict:
-        """創建 LED 光源"""
+        """
+        創建偏振 LED 光源
+
+        使用 polarizer BSDF 產生線性偏振光（θ=0° 水平偏振）
+        """
         # 光源位置：在相機上方偏前
         light_pos = (
             0.0,  # X: 中央
@@ -525,56 +528,15 @@ class SceneBuilder:
         return {
             'type': 'rectangle',
             'to_world': transform,
-            'bsdf': {'type': 'null'},
+            'bsdf': {
+                'type': 'polarizer',  # 偏振片
+                'theta': 0.0,         # 0° = 水平偏振
+            },
             'emitter': {
                 'type': 'area',
                 'radiance': {
                     'type': 'spectrum',
                     'value': Config.LED_INTENSITY,
-                },
-            },
-        }
-
-    def _create_ceiling_light(self) -> Dict:
-        """
-        創建天花板光源（非偏振環境光）
-
-        這是一個朝下的大面積光源，提供均勻的非偏振照明，
-        用於平衡 LED 的偏振效果。
-        """
-        # 光源位置：chamber 頂部中央
-        light_pos = (
-            0.0,                        # X: 中央
-            Config.CEILING_LIGHT_Y,     # Y: chamber 深度中心
-            Config.CEILING_LIGHT_Z,     # Z: 天花板高度
-        )
-
-        # 光源朝向：指向地面中心
-        target = (0.0, Config.CEILING_LIGHT_Y, 0.0)
-
-        # 轉換座標
-        pos_m = self._transform_point(light_pos)
-        tgt_m = self._transform_point(target)
-
-        # 計算變換矩陣
-        size_x = mm_to_m(Config.CEILING_LIGHT_SIZE[0])
-        size_y = mm_to_m(Config.CEILING_LIGHT_SIZE[1])
-
-        transform = mi.ScalarTransform4f.look_at(
-            origin=pos_m,
-            target=tgt_m,
-            up=[0, 0, 1],  # 保持光源方向穩定
-        ) @ mi.ScalarTransform4f.scale([size_x/2, size_y/2, 1])
-
-        return {
-            'type': 'rectangle',
-            'to_world': transform,
-            'bsdf': {'type': 'null'},
-            'emitter': {
-                'type': 'area',
-                'radiance': {
-                    'type': 'spectrum',
-                    'value': Config.CEILING_LIGHT_INTENSITY,
                 },
             },
         }
@@ -606,7 +568,7 @@ class SceneBuilder:
                 'bsdf': MaterialFactory.diffuse(0.5),
             }))
 
-        # 載入天花板（普通漫反射）
+        # 載入天花板（普通漫反射，現在也作為發光體）
         if self.has_ceiling and os.path.exists(self.ceiling_obj_path):
             print(f"[_create_meshes] 載入天花板: {self.ceiling_obj_path}")
             meshes.append(('mesh_ceiling', {
@@ -614,7 +576,14 @@ class SceneBuilder:
                 'filename': self.ceiling_obj_path,
                 'face_normals': False,
                 'to_world': transform,
-                'bsdf': MaterialFactory.diffuse(0.85),
+                'bsdf': MaterialFactory.diffuse(0.85), # 天花板本身仍然有漫反射屬性
+                'emitter': { # 添加發光體屬性
+                    'type': 'area',
+                    'radiance': {
+                        'type': 'spectrum',
+                        'value': Config.CEILING_EMITTER_INTENSITY,
+                    },
+                },
             }))
 
         # 載入玻璃幾何（使用 thindielectric）
