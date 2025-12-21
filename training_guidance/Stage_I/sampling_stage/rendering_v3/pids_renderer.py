@@ -69,7 +69,7 @@ class Config:
     HEIGHT = 480
     SPP = 4096           # 每像素樣本數
     SPP_PER_BATCH = 1024  # 分批渲染，避免 GPU OOM
-    MAX_DEPTH = 12        # 光線反彈次數（透明物體需要足夠深度）
+    MAX_DEPTH = 12        # 光線反彈次數
 
     # Chamber 尺寸 (Blender/OBJ 座標系，單位 mm)
     # 這些值來自 blender_furniture_randomizer_v17.py
@@ -91,17 +91,23 @@ class Config:
     GLASS_Y_MAX = 695.0
 
     # 光源配置
-    LED_INTENSITY = 5000.0          # LED 強度 (增加)
-    LED_SIZE = (400.0, 300.0)       # LED 面光源尺寸 (寬, 高) - 更大的光源
-    LED_POSITION_Y = 290.0          # LED 高度 (chamber 頂部)
-    LED_POSITION_Z = 500.0          # LED 深度 (更靠近玻璃區域)
+    LED_INTENSITY = 2000.0          # LED 強度
+    LED_SIZE = (180.0, 100.0)       # LED 面光源尺寸 (寬, 高)
+    LED_POSITION_Y = 280.0          # LED 高度 (chamber 頂部附近)
+    LED_POSITION_Z = 420.0          # LED 深度 (相機前方)
 
-    # 環境光
-    AMBIENT_INTENSITY = 0.5         # 環境光強度 (增加以照亮整個場景)
+    # 環境光（constant emitter = 真正非偏振光，但被 chamber 擋住）
+    AMBIENT_INTENSITY = 0.01        # 環境光強度（chamber 內無效）
+
+    # 天花板光源（獨立面光源，在 chamber 內部頂部）
+    CEILING_LIGHT_INTENSITY = 1500.0  # 天花板光源強度
+    CEILING_LIGHT_SIZE = (400.0, 350.0)  # 天花板光源尺寸 (寬, 深)
+    CEILING_LIGHT_Z = 295.0          # 天花板光源高度（略低於天花板）
+    CEILING_LIGHT_Y = 625.0          # 天花板光源深度（chamber 中心）
 
     # 材質
     GLASS_IOR = 1.5                 # 玻璃折射率
-    GLASS_ROUGHNESS = 0.02          # 玻璃粗糙度 (Stage 1 使用低值增強偏振)
+    GLASS_ROUGHNESS = 0.02          # 玻璃粗糙度
 
     # 輸出
     SAVE_PREVIEW = True
@@ -180,20 +186,15 @@ class MaterialFactory:
     """材質創建工廠"""
 
     @staticmethod
-    def glass(ior: float = Config.GLASS_IOR,
-              roughness: float = Config.GLASS_ROUGHNESS) -> Dict:
+    def glass(ior: float = Config.GLASS_IOR) -> Dict:
         """
         創建玻璃材質
 
-        使用 roughdielectric 以產生偏振反射
-        低粗糙度 = 強 Fresnel 偏振效果
+        使用 thindielectric 產生透明玻璃
         """
         return {
-            'type': 'roughdielectric',
-            'alpha': roughness,
+            'type': 'thindielectric',
             'int_ior': ior,
-            'ext_ior': 1.0,
-            'distribution': 'ggx',
         }
 
     @staticmethod
@@ -227,25 +228,18 @@ class MTLParser:
     """OBJ MTL 材質檔案解析器"""
 
     # 非玻璃材質關鍵字（優先排除，避免誤判）
-    # 參考: PIDS_DEBUG_HISTORY.md - 材質誤判問題
     NON_GLASS_KEYWORDS = [
         'background', 'wall', 'floor', 'ground', 'ceiling',
         'diffuse', 'opaque', 'solid', 'wood', 'metal', 'fabric',
         'concrete', 'brick', 'stone', 'plastic', 'rubber',
     ]
 
-    # 玻璃材質關鍵字（保守判斷，只使用明確的關鍵字）
-    # 移除危險關鍵字: partition, panel, door, window, clear
+    # 玻璃材質關鍵字（保守判斷）
     GLASS_KEYWORDS = ['glass', 'transparent', 'acrylic']
 
     @classmethod
     def parse(cls, mtl_path: str) -> Dict[str, Dict]:
-        """
-        解析 MTL 檔案
-
-        Returns:
-            Dict[material_name, {'is_glass': bool, 'color': (r,g,b)}]
-        """
+        """解析 MTL 檔案"""
         materials = {}
         current = None
 
@@ -279,11 +273,9 @@ class MTLParser:
                             float(parts[3]),
                         )
                     elif cmd == 'd' and len(parts) >= 2:
-                        # 透明度 < 0.95 視為玻璃
                         if float(parts[1]) < 0.95:
                             materials[current]['is_glass'] = True
                     elif cmd == 'illum' and len(parts) >= 2:
-                        # illum 4,6,7,9 = 透明材質
                         if int(parts[1]) in [4, 6, 7, 9]:
                             materials[current]['is_glass'] = True
 
@@ -291,23 +283,116 @@ class MTLParser:
 
     @classmethod
     def _is_glass_name(cls, name: str) -> bool:
-        """
-        根據名稱判斷是否為玻璃材質
-
-        使用保守策略：
-        1. 先排除明確的非玻璃材質
-        2. 只有明確包含 'glass' 等關鍵字才判定為玻璃
-
-        參考: PIDS_DEBUG_HISTORY.md
-        """
+        """根據名稱判斷是否為玻璃材質"""
         name_lower = name.lower()
-
-        # 先排除非玻璃材質
         if any(kw in name_lower for kw in cls.NON_GLASS_KEYWORDS):
             return False
-
-        # 只有明確的玻璃關鍵字才算
         return any(kw in name_lower for kw in cls.GLASS_KEYWORDS)
+
+
+class OBJSplitter:
+    """OBJ 檔案分離器 - 按材質分離玻璃、天花板和其他幾何"""
+
+    # 天花板材質關鍵字
+    CEILING_KEYWORDS = ['ceiling']
+
+    def __init__(self, obj_path: str, materials: Dict[str, Dict]):
+        self.obj_path = obj_path
+        self.materials = materials
+        self.vertices = []      # v
+        self.normals = []       # vn
+        self.texcoords = []     # vt
+        self.glass_faces = []   # 玻璃材質的面
+        self.ceiling_faces = [] # 天花板材質的面
+        self.other_faces = []   # 其他材質的面
+
+    @classmethod
+    def _is_ceiling(cls, mat_name: str) -> bool:
+        """判斷是否為天花板材質"""
+        name_lower = mat_name.lower()
+        return any(kw in name_lower for kw in cls.CEILING_KEYWORDS)
+
+    def parse_and_split(self) -> Tuple[str, str, str]:
+        """
+        解析 OBJ 並分離為三個檔案
+
+        Returns:
+            (glass_obj_path, ceiling_obj_path, other_obj_path)
+        """
+        current_material = None
+        current_type = 'other'  # 'glass', 'ceiling', 'other'
+
+        with open(self.obj_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+
+                parts = line.split()
+                if not parts:
+                    continue
+
+                cmd = parts[0]
+
+                if cmd == 'v' and len(parts) >= 4:
+                    self.vertices.append(line)
+                elif cmd == 'vn' and len(parts) >= 4:
+                    self.normals.append(line)
+                elif cmd == 'vt' and len(parts) >= 3:
+                    self.texcoords.append(line)
+                elif cmd == 'usemtl' and len(parts) >= 2:
+                    current_material = parts[1]
+                    mat_info = self.materials.get(current_material, {})
+
+                    # 判斷材質類型（優先順序：玻璃 > 天花板 > 其他）
+                    if mat_info.get('is_glass', False):
+                        current_type = 'glass'
+                        print(f"  [OBJ分離] 玻璃材質: {current_material}")
+                    elif self._is_ceiling(current_material):
+                        current_type = 'ceiling'
+                        print(f"  [OBJ分離] 天花板材質: {current_material}")
+                    else:
+                        current_type = 'other'
+                elif cmd == 'f':
+                    if current_type == 'glass':
+                        self.glass_faces.append(line)
+                    elif current_type == 'ceiling':
+                        self.ceiling_faces.append(line)
+                    else:
+                        self.other_faces.append(line)
+
+        # 寫入分離的 OBJ 檔案
+        base_dir = os.path.dirname(self.obj_path)
+        base_name = os.path.splitext(os.path.basename(self.obj_path))[0]
+
+        glass_path = os.path.join(base_dir, f"{base_name}_glass.obj")
+        ceiling_path = os.path.join(base_dir, f"{base_name}_ceiling.obj")
+        other_path = os.path.join(base_dir, f"{base_name}_other.obj")
+
+        self._write_obj(glass_path, self.glass_faces)
+        self._write_obj(ceiling_path, self.ceiling_faces)
+        self._write_obj(other_path, self.other_faces)
+
+        print(f"  [OBJ分離] 玻璃面數: {len(self.glass_faces)}")
+        print(f"  [OBJ分離] 天花板面數: {len(self.ceiling_faces)}")
+        print(f"  [OBJ分離] 其他面數: {len(self.other_faces)}")
+
+        return glass_path, ceiling_path, other_path
+
+    def _write_obj(self, path: str, faces: List[str]):
+        """寫入 OBJ 檔案"""
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("# Split OBJ file\n")
+            # 寫入所有頂點（保持索引一致）
+            for v in self.vertices:
+                f.write(v + '\n')
+            for vn in self.normals:
+                f.write(vn + '\n')
+            for vt in self.texcoords:
+                f.write(vt + '\n')
+            # 寫入面
+            for face in faces:
+                f.write(face + '\n')
 
 
 # ============================================================
@@ -331,6 +416,12 @@ class SceneBuilder:
 
         self.materials = MTLParser.parse(self.mtl_path)
 
+        # 分離玻璃、天花板和其他幾何
+        splitter = OBJSplitter(self.obj_path, self.materials)
+        self.glass_obj_path, self.ceiling_obj_path, self.other_obj_path = splitter.parse_and_split()
+        self.has_glass = len(splitter.glass_faces) > 0
+        self.has_ceiling = len(splitter.ceiling_faces) > 0
+
     def build(self,
               camera_position: Tuple[float, float, float],
               camera_target: Tuple[float, float, float],
@@ -348,6 +439,7 @@ class SceneBuilder:
 
         # 添加光源
         scene['led_light'] = self._create_led_light(camera_position)
+        scene['ceiling_light'] = self._create_ceiling_light()
 
         # 添加環境光
         scene['ambient'] = {
@@ -355,18 +447,11 @@ class SceneBuilder:
             'radiance': {'type': 'spectrum', 'value': Config.AMBIENT_INTENSITY},
         }
 
-        # 添加 OBJ 網格
-        mesh_dict, glass_mats = self._create_mesh()
-        scene['mesh'] = mesh_dict
-
-        # 保存玻璃材質列表供後處理使用
-        self._glass_materials = glass_mats
+        # 添加分離的 OBJ 網格
+        for name, mesh_dict in self._create_meshes():
+            scene[name] = mesh_dict
 
         return scene
-
-    def get_glass_materials(self) -> List[str]:
-        """獲取玻璃材質名稱列表"""
-        return getattr(self, '_glass_materials', [])
 
     def _create_integrator(self) -> Dict:
         """創建 Stokes integrator"""
@@ -450,55 +535,100 @@ class SceneBuilder:
             },
         }
 
-    def _create_mesh(self) -> Tuple[Dict, List[str]]:
+    def _create_ceiling_light(self) -> Dict:
         """
-        創建 OBJ 網格
+        創建天花板光源（非偏振環境光）
 
-        Mitsuba 3 的 OBJ loader 限制：
-        1. 每個材質群組會自動成為獨立的 shape
-        2. 不能在單一 shape 字典中指定多個 BSDF
+        這是一個朝下的大面積光源，提供均勻的非偏振照明，
+        用於平衡 LED 的偏振效果。
+        """
+        # 光源位置：chamber 頂部中央
+        light_pos = (
+            0.0,                        # X: 中央
+            Config.CEILING_LIGHT_Y,     # Y: chamber 深度中心
+            Config.CEILING_LIGHT_Z,     # Z: 天花板高度
+        )
 
-        解決方案：
-        - 返回基本的 mesh 字典，不包含材質覆蓋
-        - 另外返回玻璃材質名稱列表，供後處理使用
+        # 光源朝向：指向地面中心
+        target = (0.0, Config.CEILING_LIGHT_Y, 0.0)
+
+        # 轉換座標
+        pos_m = self._transform_point(light_pos)
+        tgt_m = self._transform_point(target)
+
+        # 計算變換矩陣
+        size_x = mm_to_m(Config.CEILING_LIGHT_SIZE[0])
+        size_y = mm_to_m(Config.CEILING_LIGHT_SIZE[1])
+
+        transform = mi.ScalarTransform4f.look_at(
+            origin=pos_m,
+            target=tgt_m,
+            up=[0, 0, 1],  # 保持光源方向穩定
+        ) @ mi.ScalarTransform4f.scale([size_x/2, size_y/2, 1])
+
+        return {
+            'type': 'rectangle',
+            'to_world': transform,
+            'bsdf': {'type': 'null'},
+            'emitter': {
+                'type': 'area',
+                'radiance': {
+                    'type': 'spectrum',
+                    'value': Config.CEILING_LIGHT_INTENSITY,
+                },
+            },
+        }
+
+    def _create_meshes(self) -> List[Tuple[str, Dict]]:
+        """
+        創建分離的 OBJ 網格
+
+        使用 OBJSplitter 分離玻璃、天花板和其他幾何，
+        分別載入並指定不同的 BSDF/emitter。
 
         Returns:
-            (mesh_dict, glass_material_names)
+            List of (name, mesh_dict) tuples
         """
+        meshes = []
+
         # 基本變換矩陣: mm → m 且 OBJ 座標 → Mitsuba 座標
         transform = mi.ScalarTransform4f.scale([0.001, 0.001, 0.001]) @ \
                     mi.ScalarTransform4f.rotate([1, 0, 0], -90)
 
-        # 識別玻璃材質
-        glass_mats = []
-        if self.materials:
-            for mat_name, mat_info in self.materials.items():
-                if mat_info['is_glass']:
-                    glass_mats.append(mat_name)
-                    print(f"  [材質] {mat_name}: 玻璃 (IOR={Config.GLASS_IOR})")
-                else:
-                    print(f"  [材質] {mat_name}: 漫反射")
+        # 載入非玻璃幾何（使用漫反射）
+        if os.path.exists(self.other_obj_path):
+            print(f"[_create_meshes] 載入非玻璃: {self.other_obj_path}")
+            meshes.append(('mesh_other', {
+                'type': 'obj',
+                'filename': self.other_obj_path,
+                'face_normals': False,
+                'to_world': transform,
+                'bsdf': MaterialFactory.diffuse(0.5),
+            }))
 
-        # 創建基本 mesh（讓 Mitsuba 從 MTL 讀取材質）
-        print(f"[_create_mesh] 使用 OBJ: {self.obj_path}")
-        mesh_dict = {
-            'type': 'obj',
-            'filename': self.obj_path,
-            'face_normals': False,
-            'to_world': transform,
-        }
+        # 載入天花板（普通漫反射）
+        if self.has_ceiling and os.path.exists(self.ceiling_obj_path):
+            print(f"[_create_meshes] 載入天花板: {self.ceiling_obj_path}")
+            meshes.append(('mesh_ceiling', {
+                'type': 'obj',
+                'filename': self.ceiling_obj_path,
+                'face_normals': False,
+                'to_world': transform,
+                'bsdf': MaterialFactory.diffuse(0.85),
+            }))
 
-        # 如果沒有 MTL 或材質，使用預設漫反射
-        if not self.materials:
-            mesh_dict['bsdf'] = MaterialFactory.diffuse(0.5)
-        else:
-            # 覆蓋玻璃材質為 roughdielectric
-            # Mitsuba 3 OBJ loader: 使用材質名稱作為 key 來覆蓋特定材質
-            for mat_name in glass_mats:
-                print(f"  [材質覆蓋] {mat_name} -> roughdielectric (IOR={Config.GLASS_IOR})")
-                mesh_dict[mat_name] = MaterialFactory.glass()
+        # 載入玻璃幾何（使用 thindielectric）
+        if self.has_glass and os.path.exists(self.glass_obj_path):
+            print(f"[_create_meshes] 載入玻璃: {self.glass_obj_path}")
+            meshes.append(('mesh_glass', {
+                'type': 'obj',
+                'filename': self.glass_obj_path,
+                'face_normals': False,
+                'to_world': transform,
+                'bsdf': MaterialFactory.glass(),
+            }))
 
-        return mesh_dict, glass_mats
+        return meshes
 
     def _transform_point(self, point: Tuple[float, float, float]) -> List[float]:
         """
@@ -525,59 +655,38 @@ class StokesProcessor:
         """
         從渲染結果提取 Stokes 參數
 
-        Mitsuba spectral_polarized 輸出格式:
-        - 通道數取決於光譜配置和 Stokes 參數數量
-        - 一般為 n_wavelengths × 4 (S0, S1, S2, S3) 或類似結構
-
-        常見格式:
-        - 13 通道: 4×3 + 1 (4 光譜 × 3 Stokes + S3)
-        - 15 通道: 5×3 (5 光譜 × 3 Stokes) 或 4×4-1
-        - 16 通道: 4×4 (4 光譜 × 4 Stokes)
-
         Returns:
             (S0, S1, S2) - 各為 2D array
         """
         if image.ndim != 3:
             raise ValueError(f"預期 3D 圖像，得到 {image.ndim}D")
 
+        h, w = image.shape[:2]
         n_channels = image.shape[2]
         print(f"  [Stokes] 圖像形狀: {image.shape}, 通道數: {n_channels}")
 
         if n_channels >= 12:
-            # Spectral polarized 輸出
-            # 嘗試推斷結構：假設每個 Stokes 參數有相同數量的光譜通道
-            if n_channels == 16:
-                # 4 光譜 × 4 Stokes
-                n_spectral = 4
-            elif n_channels == 15:
-                # 可能是 5×3 或其他配置
-                # 嘗試 5 光譜 × 3 Stokes (S0, S1, S2)
+            # Spectral polarized: 假設 n_spectral 波長 × 3 Stokes
+            if n_channels == 15:
                 n_spectral = 5
-            elif n_channels == 13:
-                # 4 光譜 × 3 Stokes + 1 (S3 只有1通道)
+            elif n_channels == 16:
                 n_spectral = 4
-            elif n_channels == 12:
-                # 4 光譜 × 3 Stokes 或 3 光譜 × 4 Stokes
+            elif n_channels == 13:
                 n_spectral = 4
             else:
-                # 嘗試推測
                 n_spectral = n_channels // 3
 
-            print(f"  [Stokes] 推測光譜通道數: {n_spectral}")
-
-            # 提取並平均光譜通道
+            print(f"  [Stokes] 推測 {n_spectral} 波長")
             S0 = np.mean(image[:, :, 0:n_spectral], axis=2)
             S1 = np.mean(image[:, :, n_spectral:2*n_spectral], axis=2)
             S2_end = min(3*n_spectral, n_channels)
             S2 = np.mean(image[:, :, 2*n_spectral:S2_end], axis=2)
 
         elif n_channels == 4:
-            # 直接 Stokes [S0, S1, S2, S3]
             S0 = image[:, :, 0]
             S1 = image[:, :, 1]
             S2 = image[:, :, 2]
         elif n_channels == 3:
-            # RGB - 無偏振信息
             print("  [警告] RGB 輸出，無偏振信息")
             S0 = 0.2126 * image[:,:,0] + 0.7152 * image[:,:,1] + 0.0722 * image[:,:,2]
             S1 = np.zeros_like(S0)
