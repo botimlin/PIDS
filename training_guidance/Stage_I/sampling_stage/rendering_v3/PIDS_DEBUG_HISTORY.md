@@ -517,12 +517,69 @@ python renderer_stage1_exaggerated.py \
 | v3.0.6 | 2025-12-21 | 嘗試提高光源強度與 MAX_DEPTH，未能解決漫反射問題 |
 | v3.1.0 | 2025-12-22 | **物理偏振片架構**：LED/相機獨立偏振片、dielectric玻璃、品質報告生成 |
 | v3.2.0 | 2025-12-22 | **平行光軸配置**：修正相機會聚問題，符合 PIDS Criterion 1 |
+| v3.3.0 | 2025-12-22 | **玻璃 mask 渲染**：新增 glass_mask.exr 輸出，計算 Criterion 5 深度有效率 |
+| v3.4.0 | 2025-12-22 | **獨立深度相機 + 感測器配置**：Sony IMX296LQR-C, FOV 45.4°, right_parallel 輸出 |
+| v3.4.1 | 2025-12-22 | **深度相機同水平**：深度相機與立體相機同高度，光軸平行 |
+| v3.4.2 | 2025-12-22 | **暫定最終版**：完整 5 Criteria 驗證、詳細失敗診斷報告、SPP=16384 |
+
+---
+
+## 當前配置 (v3.4.2)
+
+### 相機配置
+
+| 參數 | 值 | 說明 |
+|------|-----|------|
+| 感測器 | Sony IMX296LQR-C | 5.023 × 3.754 mm |
+| 焦距 | 6mm | |
+| FOV | 45.4° | 水平視場角 |
+| CAMERA_X | -50mm | 中心 X 偏移（向左）|
+| CAMERA_Y | 400mm | 深度位置（chamber 內）|
+| CAMERA_Z | 80mm | 高度 |
+| BASELINE | 65mm | 立體基線 |
+
+### 相機位置
+
+```
+左相機 (I∥):    X=-82.5mm, Y=400mm, Z=80mm
+右相機 (I⊥):    X=-17.5mm, Y=400mm, Z=80mm
+深度相機:       X=-50.0mm, Y=400mm, Z=80mm (中央，同水平)
+
+光軸方向: (0, 1, 0) - 三台相機完全平行
+```
+
+### 渲染配置
+
+| 參數 | 值 |
+|------|-----|
+| SPP | 16384 |
+| WIDTH | 640 |
+| HEIGHT | 480 |
+
+---
+
+## 品質驗證標準 (PIDS 5 Criteria)
+
+| Criterion | 名稱 | 閾值 | 狀態 |
+|-----------|------|------|------|
+| 1 | Geometric Consistency | vertical disparity < 1px | ✅ 已實現 |
+| 2 | Background Photometric Consistency | I∥/I⊥ ∈ [0.5, 2.0] | ✅ 已實現 |
+| 3 | Polarization Signal Validity | 玻璃 DoLP > 10% | ✅ 已實現 |
+| 4 | Ground Truth Alignment | < 10% 正規化誤差 | ✅ 已實現 |
+| 5 | Depth Validity Rate | > 90% in glass region | ✅ 已實現 |
 
 ---
 
 ## 後續工作
 
-1. **深入研究 Mitsuba 3 偏振 BSDF**：確認 diffuse 材質是否真的會 depolarize
-2. **檢查 OBJ 幾何**：確認是否有重複面導致鬼影
-3. **測試不同的 Stokes 提取方式**：可能需要針對不同通道數量做更細緻的處理
-4. **考慮使用 Mask**：在後處理中完全遮蔽背景的偏振差異
+~~1. **深入研究 Mitsuba 3 偏振 BSDF**：確認 diffuse 材質是否真的會 depolarize~~
+~~2. **檢查 OBJ 幾何**：確認是否有重複面導致鬼影~~
+~~3. **測試不同的 Stokes 提取方式**：可能需要針對不同通道數量做更細緻的處理~~
+~~4. **考慮使用 Mask**：在後處理中完全遮蔽背景的偏振差異~~
+
+**v3.4.2 暫定最終版 - 以上問題已解決或不再適用**
+
+### 下一步
+1. 批次渲染生成訓練數據
+2. 運行 quality_validator.py 驗證品質
+3. 訓練 RAFT-Stereo 模型

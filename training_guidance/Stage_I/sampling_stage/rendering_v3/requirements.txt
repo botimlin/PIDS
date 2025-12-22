@@ -2,3 +2,4 @@ mitsuba
 drjit
 numpy
 opencv-python
+OpenEXR

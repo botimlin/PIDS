@@ -1,5 +1,5 @@
 """
-PIDS Stage 1 Renderer v3.4.2
+PIDS Stage 1 Renderer v3.4.0
 ============================
 
 從頭設計的偏振立體渲染器，用於生成 PIDS 訓練數據。
@@ -90,8 +90,8 @@ class Config:
     # 渲染設定
     WIDTH = 640
     HEIGHT = 480
-    SPP = 16384           # 每像素樣本數 (16K)
-    SPP_PER_BATCH = 1024  # 分批渲染，避免 GPU OOM (16 批次)
+    SPP = 256             # 測試用低 SPP
+    SPP_PER_BATCH = 256   # 單批渲染
     MAX_DEPTH = 12        # 光線反彈次數
 
     # Chamber 尺寸 (Blender/OBJ 座標系，單位 mm)
@@ -1668,7 +1668,7 @@ class PIDSRenderer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='PIDS Stage 1 Renderer v3.4.2 (right_parallel for vertical disparity)',
+        description='PIDS Stage 1 Renderer v3.4.0 (right_parallel for vertical disparity)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例:

@@ -4,9 +4,9 @@
 
 PIDS Renderer V3 是專為 PIDS (Physics-Informed Deep Stereo) 專案設計的偏振立體渲染器，用於生成 Stage 1 合成訓練數據。
 
-**版本**: 3.2.0
+**版本**: 3.4.2 (暫定最終版)
 **日期**: 2025-12-22
-**檔案**: `pids_renderer.py`
+**檔案**: `pids_renderer.py`, `quality_validator.py`
 
 ---
 
@@ -71,31 +71,42 @@ OBJ 匯出設定為 `forward=-Y, up=Z`，載入 Mitsuba 時需要 -90° X 軸旋
 | `CHAMBER_Y_FRONT` | 350mm | 前牆 Y 位置 |
 | `CHAMBER_Y_BACK` | 900mm | 後牆 Y 位置 |
 
+### 感測器配置 (v3.4.0)
+
+| 參數 | 值 | 說明 |
+|------|-----|------|
+| 感測器 | Sony IMX296LQR-C | 1.58 MP 彩色 |
+| `SENSOR_WIDTH` | 5.023mm | 1456 × 3.45μm |
+| `SENSOR_HEIGHT` | 3.754mm | 1088 × 3.45μm |
+| `FOCAL_LENGTH` | 6mm | 鏡頭焦距 |
+| `FOV` | 45.4° | 水平視場角 = 2×arctan(5.023/(2×6)) |
+
 ### 相機配置
 
 | 參數 | 值 | 說明 |
 |------|-----|------|
-| `CAMERA_Y` | 360mm | 相機深度 (在 chamber 內) |
-| `CAMERA_Z` | 150mm | 相機高度 (chamber 中心) |
+| `CAMERA_X` | -50mm | X 偏移（向左）|
+| `CAMERA_Y` | 400mm | 相機深度 (在 chamber 內) |
+| `CAMERA_Z` | 80mm | 相機高度 (較低) |
 | `BASELINE` | 65mm | 立體基線 |
-| `FOV` | 65° | 水平視場角 |
 
-### 相機位置計算（平行光軸配置 v3.2.0）
+### 相機位置計算（平行光軸配置 v3.4.1）
 
 ```python
-# 相機位置
-左相機: (-32.5mm, 360mm, 150mm)  # X=-BASELINE/2
-右相機: (+32.5mm, 360mm, 150mm)  # X=+BASELINE/2
+# 立體相機位置
+左相機: (CAMERA_X - BASELINE/2, CAMERA_Y, CAMERA_Z) = (-82.5mm, 400mm, 80mm)
+右相機: (CAMERA_X + BASELINE/2, CAMERA_Y, CAMERA_Z) = (-17.5mm, 400mm, 80mm)
 
-# 各相機的個別目標（確保平行光軸）
-左相機目標: (-32.5mm, 611.5mm, 150mm)  # 與左相機光軸平行
-右相機目標: (+32.5mm, 611.5mm, 150mm)  # 與右相機光軸平行
+# 深度相機位置（在立體相機中央，同水平）
+深度相機: (CAMERA_X, CAMERA_Y, CAMERA_Z) = (-50mm, 400mm, 80mm)
 
 # 統一視線方向
-光軸方向: (0, 1, 0)  # 兩相機完全平行，無會聚
+光軸方向: (0, 1, 0)  # 三台相機完全平行，無會聚
 ```
 
-**重要**: v3.2.0 修正了光軸會聚問題。之前兩相機都指向同一目標點，導致光軸會聚（converging）。現在各相機有獨立目標點，確保光軸完全平行，符合 PIDS 論文的 Criterion 1 (Geometric Consistency)。
+**重要**:
+- v3.2.0 修正了光軸會聚問題，各相機有獨立目標點，確保光軸完全平行
+- v3.4.0 新增獨立深度相機，位於立體相機中央，FOV 與立體相機一致
 
 ### 渲染配置
 
@@ -103,7 +114,7 @@ OBJ 匯出設定為 `forward=-Y, up=Z`，載入 Mitsuba 時需要 -90° X 軸旋
 |------|-----|------|
 | `WIDTH` | 640 | 輸出寬度 (px) |
 | `HEIGHT` | 480 | 輸出高度 (px) |
-| `SPP` | 4096 | 每像素樣本數 |
+| `SPP` | 16384 | 每像素樣本數 (16K 高品質) |
 | `SPP_PER_BATCH` | 1024 | 分批渲染 |
 | `MAX_DEPTH` | 12 | 光線反彈次數 |
 
@@ -161,7 +172,7 @@ python pids_renderer.py --scene scene.obj --output ./output --no_preview
 | `--scene` | 二選一 | 單一 OBJ 場景路徑 |
 | `--input_dir` | 二選一 | OBJ 場景目錄 |
 | `--output` | 是 | 輸出目錄 |
-| `--spp` | 否 | SPP (預設: 4096) |
+| `--spp` | 否 | SPP (預設: 16384) |
 | `--max_scenes` | 否 | 最大渲染場景數 |
 | `--no_preview` | 否 | 不保存預覽 PNG |
 
@@ -175,10 +186,12 @@ python pids_renderer.py --scene scene.obj --output ./output --no_preview
 
 | 檔案 | 格式 | 說明 |
 |------|------|------|
-| `{scene}_left_parallel.exr` | float32 灰階 | I∥ (0° 偏振) |
-| `{scene}_right_cross.exr` | float32 灰階 | I⊥ (90° 偏振) |
-| `{scene}_depth.exr` | float32 | 深度圖 (米) |
+| `{scene}_left_parallel.exr` | float32 灰階 | 左相機 I∥ (0° 偏振) |
+| `{scene}_right_parallel.exr` | float32 灰階 | 右相機 I∥ (0° 偏振) - v3.4.0 新增 |
+| `{scene}_right_cross.exr` | float32 灰階 | 右相機 I⊥ (90° 偏振) |
+| `{scene}_depth.exr` | float32 | 深度圖 (米) - 深度相機視角 |
 | `{scene}_disparity.exr` | float32 | 視差圖 (像素) |
+| `{scene}_glass_mask.exr` | float32 | 玻璃區域 mask - v3.3.0 新增 |
 
 ### 預覽圖 (PNG)
 
@@ -578,6 +591,10 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| 3.4.2 | 2025-12-22 | **暫定最終版**：完整 5 Criteria 驗證、詳細失敗診斷報告、SPP=16384 |
+| 3.4.1 | 2025-12-22 | **深度相機同水平**：深度相機與立體相機同高度，光軸平行 |
+| 3.4.0 | 2025-12-22 | **獨立深度相機 + 感測器配置**：Sony IMX296LQR-C, FOV 45.4°, right_parallel 輸出 |
+| 3.3.0 | 2025-12-22 | **玻璃 mask 渲染**：計算 Criterion 5 深度有效率 |
 | 3.2.0 | 2025-12-22 | **平行光軸配置**：修正相機會聚問題，符合 PIDS Criterion 1 ✅ |
 | 3.1.0 | 2025-12-22 | **物理偏振片架構**：獨立偏振片、dielectric玻璃、品質報告 ✅ |
 | 3.0.5 | 2025-12-21 | 解決非偏振光源問題，將天花板網格直接設為面光源 |
@@ -588,3 +605,131 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 | 3.0 | 2025-12-21 | 從頭設計，OBJ 分離解決材質問題 |
 | 2.0 | - | 物理正確偏振版 |
 | 1.0 | - | 初始版本 |
+
+---
+
+## 品質驗證器 (quality_validator.py)
+
+### PIDS 品質標準
+
+| Criterion | 名稱 | 閾值 | 驗證方式 |
+|-----------|------|------|----------|
+| 1 | Geometric Consistency | vertical disparity < 1px | 比較 left_parallel vs right_parallel |
+| 2 | Background Photometric Consistency | I∥/I⊥ ∈ [0.5, 2.0] | 從 JSON 報告讀取 |
+| 3 | Polarization Signal Validity | 玻璃 DoLP > 10% | 從 JSON 報告讀取 |
+| 4 | Ground Truth Alignment | < 10% 正規化誤差 | 用 disparity warp 驗證 |
+| 5 | Depth Validity Rate | > 90% in glass region | 渲染時計算，從 JSON 讀取 |
+
+### 各標準實施方法
+
+#### Criterion 1: Geometric Consistency (幾何一致性)
+
+**目的**: 確保立體相機對的垂直對齊精度
+
+**實施方法**:
+1. 讀取左右相機的平行偏振圖像 (I∥_L, I∥_R)
+2. 使用相位相關法 (Phase Correlation) 計算全局位移
+3. 透過 FFT 交叉功率譜計算亞像素級偏移量
+4. 提取垂直分量 (vertical disparity)
+5. 判定: |vertical_disparity| < 1.0 pixel
+
+```python
+# 相位相關法計算垂直視差
+f1, f2 = np.fft.fft2(left), np.fft.fft2(right)
+cross_power = (f1 * np.conj(f2)) / |f1 * np.conj(f2)|
+correlation = np.fft.ifft2(cross_power)
+peak_y, peak_x = find_subpixel_peak(correlation)
+vertical_disparity = peak_y  # 應 < 1.0 px
+```
+
+#### Criterion 2: Background Photometric Consistency (背景光度一致性)
+
+**目的**: 驗證非偏振光源在背景區域的平衡性
+
+**實施方法**:
+1. 使用玻璃遮罩 (glass_mask) 識別背景區域
+2. 在背景區域計算 I∥ 和 I⊥ 的平均強度
+3. 計算比值 ratio = mean(I∥) / mean(I⊥)
+4. 判定: 0.5 ≤ ratio ≤ 2.0
+
+```python
+# 背景區域光度比值
+bg_mask = ~glass_mask
+bg_parallel = img_parallel[bg_mask].mean()
+bg_cross = img_cross[bg_mask].mean()
+ratio = bg_parallel / bg_cross  # 應在 [0.5, 2.0]
+```
+
+#### Criterion 3: Polarization Signal Validity (偏振信號有效性)
+
+**目的**: 確認玻璃區域產生足夠的偏振信號
+
+**實施方法**:
+1. 計算每個像素的線偏振度 DoLP = (I∥ - I⊥) / (I∥ + I⊥)
+2. 使用玻璃遮罩提取玻璃區域
+3. 計算玻璃區域的平均 DoLP
+4. 判定: mean(DoLP_glass) > 10%
+
+```python
+# 玻璃區域偏振度
+dolp = (I_parallel - I_cross) / (I_parallel + I_cross + eps)
+glass_dolp = dolp[glass_mask].mean()  # 應 > 0.10
+```
+
+#### Criterion 4: Ground Truth Alignment (深度對齊)
+
+**目的**: 驗證視差圖與影像的幾何對應關係
+
+**實施方法**:
+1. 讀取左右圖像和視差圖 (disparity)
+2. 使用視差對右圖進行 warp 到左視角
+3. 計算 warped_right 與 left 的正規化誤差
+4. 在有效視差區域計算平均誤差
+5. 判定: mean_error < 10% (正規化誤差)
+
+```python
+# 視差 warp 對齊檢查
+for x in range(width):
+    x_src = x + disparity[y, x]
+    warped_right[y, x] = right[y, x_src]
+error = |warped_right - left| / max_intensity
+mean_error = error[valid_mask].mean()  # 應 < 0.10
+```
+
+#### Criterion 5: Depth Validity Rate (深度有效率)
+
+**目的**: 確保玻璃區域有足夠的有效深度值
+
+**實施方法**:
+1. 讀取深度圖 (depth) 和玻璃遮罩
+2. 統計玻璃區域的總像素數
+3. 統計玻璃區域中深度值有效 (> 0 且 < ∞) 的像素數
+4. 計算有效率 = valid_count / total_count
+5. 判定: validity_rate > 90%
+
+```python
+# 玻璃區域深度有效率
+glass_depth = depth[glass_mask]
+valid = (glass_depth > 0) & (glass_depth < inf)
+validity_rate = valid.sum() / glass_mask.sum()  # 應 > 0.90
+```
+
+### 使用方式
+
+```bash
+# 驗證單一目錄
+python quality_validator.py --input_dir ./output --output quality_report.md
+
+# 同時輸出 JSON
+python quality_validator.py --input_dir ./output --output quality_report.md --json quality_report.json
+```
+
+### 報告格式
+
+報告會產生：
+1. **總覽表格**: 所有場景的 5 個 Criterion 結果
+2. **不合規詳細資訊**: 只對失敗場景顯示詳細診斷，包含：
+   - 目的說明
+   - 測量結果（實際值、閾值、差距）
+   - 計算方法
+   - 可能原因與建議
