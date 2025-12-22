@@ -1,0 +1,4 @@
+mitsuba
+drjit
+numpy
+opencv-python
