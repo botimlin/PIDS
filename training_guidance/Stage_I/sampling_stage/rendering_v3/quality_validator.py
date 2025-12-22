@@ -1,11 +1,12 @@
 """
-PIDS Quality Validator v1.2
-===========================
+PIDS Quality Validator v1.4.1
+=============================
 
 批次驗證渲染結果，生成 Markdown 品質報告。
 
 根據 PIDS 論文的 Training Data Collection Standards 驗證：
 1. Geometric Consistency (vertical disparity < 1px) - 從 EXR 計算
+   [注意] 對於模擬場景，可使用 --skip-c1 跳過此檢查（相機位置已精確定義）
 2. Background Photometric Consistency (|I∥ - I⊥| ≈ 0) - 從 JSON 讀取
 3. Polarization Signal Validity (I∥ > I⊥ on glass) - 從 JSON 讀取
 4. Ground Truth Alignment (< 1px misalignment) - 需要額外計算
@@ -13,6 +14,7 @@ PIDS Quality Validator v1.2
 
 使用方式:
     python quality_validator.py --input_dir ./output --output report.md
+    python quality_validator.py --input_dir ./output --output report.md --skip-c1  # 模擬場景
 """
 
 import os
@@ -303,21 +305,41 @@ class QualityValidator:
         },
     }
 
-    def __init__(self, input_dir: str):
+    def __init__(self, input_dir: str, skip_c1: bool = False):
         self.input_dir = Path(input_dir)
+        self.skip_c1 = skip_c1  # 模擬場景跳過 C1 (Geometric Consistency)
         self.reports = []
         self.summary = {
             'total': 0,
             'passed': 0,
             'failed': 0,
             'criteria_stats': {},
+            'skip_c1': skip_c1,
         }
 
     def load_reports(self) -> int:
         """載入所有場景報告"""
+        import re
         report_files = sorted(self.input_dir.glob('*_report.json'))
 
+        # 過濾掉 OBJ 分割產生的中間檔案 (_glass, _other)
+        # 只保留符合 scene_XXXX_report.json 格式的檔案
+        valid_pattern = re.compile(r'^scene_\d{4}_report\.json$')
+
+        skipped_count = 0
         for report_file in report_files:
+            filename = report_file.name
+
+            # 過濾掉 _glass 和 _other 後綴的報告
+            if '_glass_report.json' in filename or '_other_report.json' in filename:
+                skipped_count += 1
+                continue
+
+            # 確認符合有效格式
+            if not valid_pattern.match(filename):
+                skipped_count += 1
+                continue
+
             try:
                 with open(report_file, 'r', encoding='utf-8') as f:
                     report = json.load(f)
@@ -327,6 +349,8 @@ class QualityValidator:
                 print(f"[警告] 無法載入 {report_file}: {e}")
 
         self.summary['total'] = len(self.reports)
+        if skipped_count > 0:
+            print(f"[Validator] 已跳過 {skipped_count} 個中間檔案 (*_glass, *_other)")
         print(f"[Validator] 載入 {len(self.reports)} 個場景報告")
         return len(self.reports)
 
@@ -351,7 +375,22 @@ class QualityValidator:
 
         # Criterion 1: Geometric Consistency (從 EXR 計算)
         # 注意：必須比較相同偏振態的影像，否則玻璃區域強度差異會導致匹配失敗
-        if check_exr and (HAS_CV2 or HAS_OPENEXR):
+        # [模擬場景] 若 skip_c1=True，跳過此檢查（相機位置已精確定義）
+        if self.skip_c1:
+            # 模擬場景：跳過 C1 檢查，相機位置已精確定義
+            results['geometric_consistency'] = None  # None 表示跳過
+            extra_data['vertical_disparity'] = {'skipped': True, 'reason': 'simulated_scene'}
+            # 仍需載入影像供 C4 使用
+            if check_exr and (HAS_CV2 or HAS_OPENEXR):
+                left_exr = self.input_dir / f"{scene_name}_left_parallel.exr"
+                right_exr = self.input_dir / f"{scene_name}_right_parallel.exr"
+                if left_exr.exists() and right_exr.exists():
+                    try:
+                        left_img = load_exr(str(left_exr))
+                        right_img = load_exr(str(right_exr))
+                    except Exception:
+                        pass
+        elif check_exr and (HAS_CV2 or HAS_OPENEXR):
             left_exr = self.input_dir / f"{scene_name}_left_parallel.exr"
             right_exr = self.input_dir / f"{scene_name}_right_parallel.exr"  # 相同偏振態
 
@@ -424,7 +463,7 @@ class QualityValidator:
 
         # 初始化統計
         for key in self.CRITERIA:
-            self.summary['criteria_stats'][key] = {'passed': 0, 'failed': 0}
+            self.summary['criteria_stats'][key] = {'passed': 0, 'failed': 0, 'skipped': 0}
 
         for i, report in enumerate(self.reports):
             scene_name = report.get('scene_name', 'unknown')
@@ -434,8 +473,10 @@ class QualityValidator:
             results = validation['results']
             extra_data = validation['extra_data']
 
-            # 統計
-            all_passed = all(results.values())
+            # 統計 (跳過 None 值，這些是被 skip 的檢查項)
+            # 只檢查非 None 的結果
+            active_results = {k: v for k, v in results.items() if v is not None}
+            all_passed = all(active_results.values()) if active_results else True
             if all_passed:
                 self.summary['passed'] += 1
             else:
@@ -443,7 +484,9 @@ class QualityValidator:
 
             for key, passed in results.items():
                 if key in self.summary['criteria_stats']:
-                    if passed:
+                    if passed is None:
+                        self.summary['criteria_stats'][key]['skipped'] += 1
+                    elif passed:
                         self.summary['criteria_stats'][key]['passed'] += 1
                     else:
                         self.summary['criteria_stats'][key]['failed'] += 1
@@ -470,6 +513,8 @@ class QualityValidator:
         lines.append("")
         lines.append(f"**生成時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"**輸入目錄**: `{self.input_dir}`")
+        if self.skip_c1:
+            lines.append(f"**模式**: 模擬場景 (C1 Geometric Consistency 已跳過)")
         lines.append("")
 
         # 總覽
@@ -490,17 +535,43 @@ class QualityValidator:
         # 各項標準統計
         lines.append("## 各項標準統計")
         lines.append("")
-        lines.append("| Criterion | 標準名稱 | 通過 | 未通過 | 通過率 |")
-        lines.append("|-----------|----------|------|--------|--------|")
+        if self.skip_c1:
+            lines.append("### ℹ️ C1 (Geometric Consistency) 跳過說明")
+            lines.append("")
+            lines.append("**原因**: 本數據集為**模擬場景**，相機位置由渲染器 (`pids_renderer.py`) 精確定義：")
+            lines.append("")
+            lines.append("```")
+            lines.append("左相機: (-82.5mm, 400mm, 80mm)")
+            lines.append("右相機: (-17.5mm, 400mm, 80mm)")
+            lines.append("光軸方向: (0, 1, 0) - 完全平行，無會聚")
+            lines.append("```")
+            lines.append("")
+            lines.append("**為何跳過**:")
+            lines.append("1. C1 的 vertical disparity 檢查使用相位相關法 (Phase Correlation) 比較左右圖像")
+            lines.append("2. 此方法在**低紋理區域**（如純色牆面、天花板）容易產生誤匹配")
+            lines.append("3. 模擬場景的相機幾何由數學精確定義，vertical disparity 理論上為 0")
+            lines.append("4. 因此 C1 檢查對模擬數據無意義，且會產生大量假陽性")
+            lines.append("")
+            lines.append("**實際驗證**: C1 檢查適用於**真實相機系統**，用於檢測物理安裝的垂直對齊誤差。")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        lines.append("| Criterion | 標準名稱 | 通過 | 未通過 | 跳過 | 通過率 |")
+        lines.append("|-----------|----------|------|--------|------|--------|")
 
         for key, stats in summary['criteria_stats'].items():
             criterion_info = self.CRITERIA[key]
+            skipped = stats.get('skipped', 0)
             total = stats['passed'] + stats['failed']
-            rate = stats['passed'] / total * 100 if total > 0 else 0
-            status = "✓" if rate >= 90 else "⚠️" if rate >= 70 else "✗"
+            if total > 0:
+                rate = stats['passed'] / total * 100
+                status = "✓" if rate >= 90 else "⚠️" if rate >= 70 else "✗"
+                rate_str = f"{rate:.1f}% {status}"
+            else:
+                rate_str = "- (已跳過)"
             lines.append(
                 f"| {criterion_info['criterion']} | {criterion_info['name']} | "
-                f"{stats['passed']} | {stats['failed']} | {rate:.1f}% {status} |"
+                f"{stats['passed']} | {stats['failed']} | {skipped} | {rate_str} |"
             )
         lines.append("")
 
@@ -839,16 +910,22 @@ def main():
                         help='同時輸出 JSON 格式報告')
     parser.add_argument('--skip-exr', action='store_true',
                         help='跳過 EXR 讀取（不計算 vertical disparity）')
+    parser.add_argument('--skip-c1', action='store_true',
+                        help='跳過 C1 (Geometric Consistency) 檢查 - 適用於模擬場景（相機位置已精確定義）')
 
     args = parser.parse_args()
 
     # 檢查依賴
-    if not args.skip_exr and not (HAS_CV2 or HAS_OPENEXR):
+    if not args.skip_exr and not args.skip_c1 and not (HAS_CV2 or HAS_OPENEXR):
         print("[警告] 未安裝 OpenCV 或 OpenEXR，無法計算 vertical disparity")
-        print("       使用 --skip-exr 跳過，或安裝: pip install opencv-python")
+        print("       使用 --skip-exr 或 --skip-c1 跳過，或安裝: pip install opencv-python")
+
+    # 模式提示
+    if args.skip_c1:
+        print("[模式] 模擬場景模式 - C1 (Geometric Consistency) 檢查已跳過")
 
     # 驗證
-    validator = QualityValidator(args.input_dir)
+    validator = QualityValidator(args.input_dir, skip_c1=args.skip_c1)
     count = validator.load_reports()
 
     if count == 0:
@@ -877,6 +954,8 @@ def main():
     # 印出摘要
     print(f"\n{'='*50}")
     print(f"驗證完成")
+    if args.skip_c1:
+        print(f"[模擬場景模式] C1 已跳過")
     print(f"{'='*50}")
     print(f"總場景: {results['summary']['total']}")
     print(f"通過: {results['summary']['passed']}")

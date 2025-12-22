@@ -6,7 +6,9 @@ PIDS Renderer V3 是專為 PIDS (Physics-Informed Deep Stereo) 專案設計的�
 
 **版本**: 3.4.2 (暫定最終版)
 **日期**: 2025-12-22
-**檔案**: `pids_renderer.py`, `quality_validator.py`
+**檔案**:
+- `pids_renderer.py` - 渲染器
+- `quality_validator.py` v1.4 - 品質驗證器（支援模擬場景模式）
 
 ---
 
@@ -608,7 +610,7 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 
 ---
 
-## 品質驗證器 (quality_validator.py)
+## 品質驗證器 (quality_validator.py v1.4)
 
 ### PIDS 品質標準
 
@@ -619,6 +621,8 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 | 3 | Polarization Signal Validity | 玻璃 DoLP > 10% | 從 JSON 報告讀取 |
 | 4 | Ground Truth Alignment | < 10% 正規化誤差 | 用 disparity warp 驗證 |
 | 5 | Depth Validity Rate | > 90% in glass region | 渲染時計算，從 JSON 讀取 |
+
+> ⚠️ **模擬場景注意事項**: 對於模擬場景，C1 (Geometric Consistency) 檢查可能產生高誤判率，因為相位相關法在低紋理區域無法正確匹配。模擬場景的相機位置由渲染器精確定義，使用 `--skip-c1` 參數可跳過此檢查。
 
 ### 各標準實施方法
 
@@ -717,12 +721,34 @@ validity_rate = valid.sum() / glass_mask.sum()  # 應 > 0.90
 ### 使用方式
 
 ```bash
-# 驗證單一目錄
+# 驗證單一目錄（完整檢查）
 python quality_validator.py --input_dir ./output --output quality_report.md
+
+# 模擬場景模式（跳過 C1 Geometric Consistency）
+python quality_validator.py --input_dir ./output --output quality_report.md --skip-c1
 
 # 同時輸出 JSON
 python quality_validator.py --input_dir ./output --output quality_report.md --json quality_report.json
+
+# 跳過 EXR 讀取（快速驗證，不計算 C1 和 C4）
+python quality_validator.py --input_dir ./output --output quality_report.md --skip-exr
 ```
+
+### 命令行參數
+
+| 參數 | 說明 |
+|------|------|
+| `--input_dir` | 包含 `*_report.json` 的目錄 (必需) |
+| `--output` | 輸出 Markdown 報告路徑 (預設: `quality_report.md`) |
+| `--json` | 同時輸出 JSON 格式報告 |
+| `--skip-c1` | 跳過 C1 (Geometric Consistency) 檢查 - **模擬場景專用** |
+| `--skip-exr` | 跳過 EXR 讀取（不計算 vertical disparity 和 ground truth alignment）|
+
+### v1.4 更新說明
+
+1. **新增 `--skip-c1` 參數**: 模擬場景相機位置由渲染器精確定義，C1 檢查不適用
+2. **自動過濾中間檔案**: 自動排除 `*_glass_report.json` 和 `*_other_report.json`（OBJ 分離的中間產物）
+3. **改進報告格式**: 顯示跳過的檢查項，清楚標示模擬場景模式
 
 ### 報告格式
 
