@@ -315,6 +315,88 @@ auto_balance = True  # 後處理平衡
 
 ---
 
+### 階段 13：修正相機光軸為平行配置 (v3.2.0) ✅
+
+**問題描述**：
+
+用戶在檢視 PIDS 論文的 Training Data Collection Standards 後發現，現有實現違反了 **Criterion 1 (Geometric Consistency Filtering)**：
+
+> **Criterion 1**: 左右圖像的 vertical disparity 應 < 1 pixel
+
+原因是兩個相機都使用 `look_at` 指向**同一個目標點** `(0, 611.5, 150)`，導致光軸**會聚**（converging），而非平行。這會造成：
+- 垂直視差（vertical disparity）不為零
+- 需要額外的 stereo rectification 步驟
+- 違反標準立體視覺的假設
+
+**原始配置（會聚光軸）**：
+```
+左相機: 位置 = (-32.5, 360, 150), 目標 = (0, 611.5, 150)
+右相機: 位置 = (+32.5, 360, 150), 目標 = (0, 611.5, 150)
+
+     ← 32.5mm →← 32.5mm →
+    [L]                 [R]
+      \                 /
+       \               /
+        \             /
+         \           /
+          \         /
+           \_______/
+              ↑
+         共同目標點
+```
+
+**修正後（平行光軸）**：
+```
+左相機: 位置 = (-32.5, 360, 150), 目標 = (-32.5, 611.5, 150)
+右相機: 位置 = (+32.5, 360, 150), 目標 = (+32.5, 611.5, 150)
+
+    [L]                 [R]
+     |                   |
+     |                   |
+     |                   |
+     ↓                   ↓
+  (各自的目標，方向相同)
+```
+
+**實施方案**：
+
+1. 新增 `Config.forward_direction()` 方法：計算統一的視線方向向量 `(0, 1, 0)`
+2. 新增 `Config.camera_target_for_position()` 方法：根據相機位置計算個別目標點
+3. 修改 `render_scene()` 方法：為左右相機計算獨立的目標點
+4. 相機偏振片自動跟隨新配置
+
+**代碼變更**：
+
+```python
+@classmethod
+def forward_direction(cls) -> Tuple[float, float, float]:
+    """相機光軸方向（歸一化）"""
+    center_pos = np.array([0.0, cls.CAMERA_Y, cls.CAMERA_Z])
+    target = np.array(cls.target_point())
+    direction = target - center_pos
+    direction = direction / np.linalg.norm(direction)
+    return tuple(direction)
+
+@classmethod
+def camera_target_for_position(cls, camera_pos: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """計算相機的個別目標點（確保平行光軸）"""
+    direction = np.array(cls.forward_direction())
+    center_pos = np.array([0.0, cls.CAMERA_Y, cls.CAMERA_Z])
+    target = np.array(cls.target_point())
+    distance = np.linalg.norm(target - center_pos)
+    camera_pos_arr = np.array(camera_pos)
+    camera_target = camera_pos_arr + direction * distance
+    return tuple(camera_target)
+```
+
+**預期效果**：
+- Vertical disparity ≈ 0（滿足 Criterion 1）
+- 無需 stereo rectification
+- 視差只出現在水平方向（epipolar line = 水平線）
+- 與標準立體匹配算法相容
+
+---
+
 ## 關鍵發現總結
 
 ### 1. 材質判斷函數的危險關鍵字
@@ -421,6 +503,7 @@ python renderer_stage1_exaggerated.py \
 | v3.0.5 | 2025-12-21 | 解決非偏振光源問題，將天花板網格直接設為面光源 |
 | v3.0.6 | 2025-12-21 | 嘗試提高光源強度與 MAX_DEPTH，未能解決漫反射問題 |
 | v3.1.0 | 2025-12-22 | **物理偏振片架構**：LED/相機獨立偏振片、dielectric玻璃、品質報告生成 |
+| v3.2.0 | 2025-12-22 | **平行光軸配置**：修正相機會聚問題，符合 PIDS Criterion 1 |
 
 ---
 

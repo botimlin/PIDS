@@ -4,8 +4,8 @@
 
 PIDS Renderer V3 是專為 PIDS (Physics-Informed Deep Stereo) 專案設計的偏振立體渲染器，用於生成 Stage 1 合成訓練數據。
 
-**版本**: 3.1.0
-**日期**: 2025-12-21
+**版本**: 3.2.0
+**日期**: 2025-12-22
 **檔案**: `pids_renderer.py`
 
 ---
@@ -80,13 +80,22 @@ OBJ 匯出設定為 `forward=-Y, up=Z`，載入 Mitsuba 時需要 -90° X 軸旋
 | `BASELINE` | 65mm | 立體基線 |
 | `FOV` | 65° | 水平視場角 |
 
-### 相機位置計算
+### 相機位置計算（平行光軸配置 v3.2.0）
 
 ```python
+# 相機位置
 左相機: (-32.5mm, 360mm, 150mm)  # X=-BASELINE/2
 右相機: (+32.5mm, 360mm, 150mm)  # X=+BASELINE/2
-目標點: (0, 611.5mm, 150mm)      # 玻璃區中心
+
+# 各相機的個別目標（確保平行光軸）
+左相機目標: (-32.5mm, 611.5mm, 150mm)  # 與左相機光軸平行
+右相機目標: (+32.5mm, 611.5mm, 150mm)  # 與右相機光軸平行
+
+# 統一視線方向
+光軸方向: (0, 1, 0)  # 兩相機完全平行，無會聚
 ```
+
+**重要**: v3.2.0 修正了光軸會聚問題。之前兩相機都指向同一目標點，導致光軸會聚（converging）。現在各相機有獨立目標點，確保光軸完全平行，符合 PIDS 論文的 Criterion 1 (Geometric Consistency)。
 
 ### 渲染配置
 
@@ -536,10 +545,40 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 
 ---
 
+### 2025-12-22: 平行光軸配置 (v3.2.0) ✅
+
+**問題**: 用戶在檢視 PIDS 論文的 Training Data Collection Standards 後發現，現有實現違反了 Criterion 1 (Geometric Consistency Filtering)。原因是兩個相機都使用 `look_at` 指向同一個目標點，導致光軸會聚（converging），而非平行。
+
+**影響**:
+- 垂直視差（vertical disparity）不為零
+- 需要額外的 stereo rectification 步驟
+- 違反標準立體視覺的假設
+
+**解決方案**:
+
+1. 新增 `Config.forward_direction()`: 計算統一的視線方向向量
+2. 新增 `Config.camera_target_for_position()`: 根據相機位置計算個別目標點
+3. 修改渲染流程: 為左右相機使用獨立的目標點
+
+**修正後**:
+```
+左相機: 位置 = (-32.5, 360, 150), 目標 = (-32.5, 611.5, 150)
+右相機: 位置 = (+32.5, 360, 150), 目標 = (+32.5, 611.5, 150)
+光軸方向: (0, 1, 0) - 兩相機完全平行
+```
+
+**預期效果**:
+- Vertical disparity ≈ 0（滿足 Criterion 1）
+- 無需 stereo rectification
+- 視差只出現在水平方向（epipolar line = 水平線）
+
+---
+
 ## 版本歷史
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| 3.2.0 | 2025-12-22 | **平行光軸配置**：修正相機會聚問題，符合 PIDS Criterion 1 ✅ |
 | 3.1.0 | 2025-12-22 | **物理偏振片架構**：獨立偏振片、dielectric玻璃、品質報告 ✅ |
 | 3.0.5 | 2025-12-21 | 解決非偏振光源問題，將天花板網格直接設為面光源 |
 | 3.0.4 | 2025-12-21 | 嘗試天花板燈陣列，發現光線追蹤問題 |
