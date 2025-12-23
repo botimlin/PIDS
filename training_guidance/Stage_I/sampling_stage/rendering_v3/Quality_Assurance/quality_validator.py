@@ -1,5 +1,5 @@
 """
-PIDS Quality Validator v1.4.1
+PIDS Quality Validator v1.4.2
 =============================
 
 批次驗證渲染結果，生成 Markdown 品質報告。
@@ -640,8 +640,9 @@ class QualityValidator:
                 # 找出失敗的 criteria
                 failed_criteria = []
 
-                # Criterion 1
-                if not results.get('geometric_consistency', True):
+                # Criterion 1 (跳過 None，只有明確 False 才算失敗)
+                c1_result = results.get('geometric_consistency')
+                if c1_result is False:  # 明確是 False，不是 None（跳過）
                     failed_criteria.append('C1')
                     vd_data = extra_data.get('vertical_disparity', {})
                     vd_value = vd_data.get('subpixel_offset', 0)

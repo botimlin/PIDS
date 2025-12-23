@@ -3,3 +3,12 @@ desktop.ini
 # Generated scenes
 scenes_output/
 **/scenes_output/
+
+# Rendered output (large files)
+training_guidance/Stage_I/sampling_stage/rendering_v3/output/
+
+# Training dataset (large files)
+training_guidance/Stage_I/training_stage/dataset/
+
+# Pretrained weights (large files)
+training_guidance/Stage_I/training_stage/pretrained/

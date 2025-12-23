@@ -6,9 +6,29 @@ PIDS Renderer V3 是專為 PIDS (Physics-Informed Deep Stereo) 專案設計的�
 
 **版本**: 3.4.2 (暫定最終版)
 **日期**: 2025-12-22
-**檔案**:
-- `pids_renderer.py` - 渲染器
-- `quality_validator.py` v1.4 - 品質驗證器（支援模擬場景模式）
+
+### 目錄結構
+
+```
+rendering_v3/
+├── pids_renderer.py              # 偏振渲染器 (主要)
+├── pids_renderer_nopol.py        # 無偏振渲染器 (對比實驗用)
+├── README.md                     # 本文檔
+├── PIDS_DEBUG_HISTORY.md         # 開發除錯歷史
+│
+├── Quality_Assurance/            # 品質檢測工具
+│   ├── quality_validator.py      # 品質驗證器 v1.4
+│   ├── aggregate_reports.py      # 報告匯總腳本
+│   └── report/                   # 生成的報告
+│       ├── summary_report.md     # 場景匯總報告
+│       └── quality_report.md     # 品質驗證報告
+│
+└── output/                       # 渲染輸出
+    └── output/                   # 場景渲染結果
+        ├── scene_XXXX_*.exr      # EXR 檔案
+        ├── scene_XXXX_*.png      # 預覽圖
+        └── scene_XXXX_*.json     # 參數/報告
+```
 
 ---
 
@@ -177,6 +197,82 @@ python pids_renderer.py --scene scene.obj --output ./output --no_preview
 | `--spp` | 否 | SPP (預設: 16384) |
 | `--max_scenes` | 否 | 最大渲染場景數 |
 | `--no_preview` | 否 | 不保存預覽 PNG |
+
+---
+
+## 無偏振版本 (pids_renderer_nopol.py)
+
+### 用途
+
+用於論文中的**消融實驗 (Ablation Study)**，比較偏振 vs 無偏振對透明物體偵測的影響。
+
+### 與偏振版的差異
+
+| 項目 | 偏振版 (`pids_renderer.py`) | 無偏振版 (`pids_renderer_nopol.py`) |
+|------|---------------------------|-------------------------------------|
+| Mitsuba variant | `cuda_ad_spectral_polarized` | `cuda_ad_rgb` |
+| Integrator | `stokes` (輸出 S0,S1,S2,S3) | `path` (標準渲染) |
+| LED 光源 | 有偏振片 (0° 水平偏振) | 無偏振片 |
+| 左相機 | 0° 偏振片 (I∥) | 無偏振片 |
+| 右相機 | 90° 偏振片 (I⊥) | 無偏振片 |
+| 輸出檔名 | `*_left_parallel.exr`, `*_right_cross.exr` | `*_left_nopol.exr`, `*_right_nopol.exr` |
+| DoLP 輸出 | 有 | 無 |
+
+### 保持完全相同的設置
+
+以下參數與偏振版**完全相同**，確保對比實驗的公平性：
+
+- **相機位置**: 左 (-82.5, 400, 80)mm，右 (-17.5, 400, 80)mm
+- **Baseline**: 65mm
+- **FOV**: 45.4°
+- **LED 位置**: (0, 420, 280)mm
+- **LED 強度**: 2000
+- **LED 尺寸**: 180×100mm
+- **天花板發光強度**: 100
+- **玻璃 IOR**: 1.5
+- **材質設定**: dielectric (玻璃), diffuse (其他)
+- **座標轉換**: OBJ → Mitsuba (-90° X 軸旋轉, mm→m)
+
+### 使用方式
+
+```bash
+# 單一場景
+python pids_renderer_nopol.py --scene scene_0001.obj --output ./output_nopol
+
+# 批次渲染（使用與偏振版相同的場景）
+python pids_renderer_nopol.py --input_dir ./scenes --output ./output_nopol --max_scenes 100
+
+# 調整 SPP
+python pids_renderer_nopol.py --scene scene.obj --output ./output_nopol --spp 8192
+```
+
+### 無偏振版輸出檔案
+
+| 檔案 | 格式 | 說明 |
+|------|------|------|
+| `{scene}_left_nopol.exr` | float32 灰階 | 左相機 (無偏振) |
+| `{scene}_right_nopol.exr` | float32 灰階 | 右相機 (無偏振) |
+| `{scene}_depth.exr` | float32 | 深度圖 (米) |
+| `{scene}_disparity.exr` | float32 | 視差圖 (像素) |
+| `{scene}_glass_mask.exr` | float32 | 玻璃區域 mask |
+| `{scene}_stereo_diff.png` | PNG | 左右圖像差異 (應該很小) |
+| `{scene}_report_nopol.json` | JSON | 品質報告 |
+| `{scene}_params_nopol.json` | JSON | 渲染參數 |
+
+### 預期結果差異
+
+| 指標 | 偏振版 | 無偏振版 |
+|------|--------|----------|
+| 玻璃區域對比度 | 高 (I∥ >> I⊥) | 低 (左 ≈ 右) |
+| DoLP | 10-30% (玻璃區域) | N/A |
+| 立體匹配難度 | 較低 (偏振輔助) | 較高 (純紋理) |
+
+### 論文對比實驗建議
+
+1. 使用**相同的 OBJ 場景**分別渲染偏振版和無偏振版
+2. 使用**相同的訓練配置**分別訓練兩個模型
+3. 在相同的測試集上比較 EPE、3px error 等指標
+4. 特別關注**玻璃區域**的深度估計精度差異
 
 ---
 
@@ -593,6 +689,7 @@ RuntimeError: [Shape] Only a single BSDF child object can be specified per shape
 
 | 版本 | 日期 | 說明 |
 |------|------|------|
+| 3.4.2-nopol | 2025-12-23 | **無偏振版本**：用於消融實驗，移除所有偏振特性但保持相同場景設置 |
 | 3.4.2 | 2025-12-22 | **暫定最終版**：完整 5 Criteria 驗證、詳細失敗診斷報告、SPP=16384 |
 | 3.4.1 | 2025-12-22 | **深度相機同水平**：深度相機與立體相機同高度，光軸平行 |
 | 3.4.0 | 2025-12-22 | **獨立深度相機 + 感測器配置**：Sony IMX296LQR-C, FOV 45.4°, right_parallel 輸出 |
@@ -721,17 +818,23 @@ validity_rate = valid.sum() / glass_mask.sum()  # 應 > 0.90
 ### 使用方式
 
 ```bash
+# 進入 Quality_Assurance 目錄
+cd Quality_Assurance
+
 # 驗證單一目錄（完整檢查）
-python quality_validator.py --input_dir ./output --output quality_report.md
+python quality_validator.py --input_dir ../output/output --output ./report/quality_report.md
 
 # 模擬場景模式（跳過 C1 Geometric Consistency）
-python quality_validator.py --input_dir ./output --output quality_report.md --skip-c1
+python quality_validator.py --input_dir ../output/output --output ./report/quality_report.md --skip-c1
 
 # 同時輸出 JSON
-python quality_validator.py --input_dir ./output --output quality_report.md --json quality_report.json
+python quality_validator.py --input_dir ../output/output --output ./report/quality_report.md --json ./report/quality_report.json
 
 # 跳過 EXR 讀取（快速驗證，不計算 C1 和 C4）
-python quality_validator.py --input_dir ./output --output quality_report.md --skip-exr
+python quality_validator.py --input_dir ../output/output --output ./report/quality_report.md --skip-exr
+
+# 匯總所有場景報告
+python aggregate_reports.py --input_dir ../output/output --output ./report/summary_report.md
 ```
 
 ### 命令行參數
