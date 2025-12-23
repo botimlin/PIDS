@@ -3,13 +3,12 @@ PIDS Blender 傢俱隨機擺放腳本 (v17.0)
 =====================================
 
 更新內容:
-- 新增背景牆壁生成
-- 新增地板生成
-- 牆壁和地板使用漫反射材質
+- 新增完整封閉 chamber（前牆、後牆、左牆、右牆、地板、天花板）
+- 移除自動生成傢俱功能，只使用已有素材
 
 功能:
 1. 生成隨機玻璃和傢俱場景
-2. 生成背景牆壁和地板
+2. 生成完整封閉房間背景（6 面）
 3. 匯出為 OBJ 檔案
 4. 同時匯出場景描述 JSON
 
@@ -18,11 +17,25 @@ PIDS Blender 傢俱隨機擺放腳本 (v17.0)
 - 相機在原點，朝向 +Y 方向
 - 玻璃在 Y=528~695mm (工作距離)
 - 傢俱在 Y=700~800mm (背景)
-- 牆壁在傢俱後方
-- 地板在 Z=0
+- 封閉 chamber 包圍整個場景
+
+Chamber 結構 (俯視圖):
+    
+         後牆 (back)
+    ┌─────────────────┐
+    │                 │
+ 左 │    傢俱區域     │ 右
+ 牆 │                 │ 牆
+    │    玻璃區域     │
+    │                 │
+    │     相機        │
+    └─────────────────┘
+         前牆 (front)
+    
+    相機 → +Y 方向
 
 使用方法:
-1. 在 Blender 中準備 source_* 物件
+1. 在 Blender 中準備 source_* 傢俱物件
 2. 執行此腳本
 3. OBJ 檔案輸出到指定目錄
 """
@@ -42,7 +55,7 @@ from mathutils import Vector
 CONFIG = {
     # 生成設定
     'num_scenes': 1000,
-    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS_2\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes_output',    
+    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS_3\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes_output',    
     
     # 場景範圍 (mm)
     'scene': {
@@ -53,24 +66,54 @@ CONFIG = {
         'furniture_y_jitter': 50,  # 傢俱深度隨機範圍
     },
     
-    # 背景設定 (牆壁和地板)
+    # 背景設定 (牆壁、地板、天花板) - 封閉 chamber
     'background': {
         'enabled': True,        # 是否生成背景
-        'wall': {
+        
+        # 後牆 (面向相機)
+        'back_wall': {
             'enabled': True,
             'y_offset': 100,    # 牆壁在傢俱後方的距離 (mm)
-            'width': 400,       # 牆壁寬度 (mm)
+            'width': 600,       # 牆壁寬度 (mm) - 增加以完全覆蓋 FOV
             'height': 300,      # 牆壁高度 (mm)
             'thickness': 5,     # 牆壁厚度 (mm)
             'color': (0.75, 0.70, 0.65),  # 米色
         },
+        
+        # 前牆 (相機後方)
+        'front_wall': {
+            'enabled': True,
+            'y_position': 350,  # 前牆 Y 位置 (mm)，相機前方一點
+            'thickness': 5,
+            'color': (0.75, 0.70, 0.65),
+        },
+        
+        # 左牆
+        'left_wall': {
+            'enabled': True,
+            'thickness': 5,
+            'color': (0.72, 0.68, 0.63),  # 稍微不同的米色
+        },
+        
+        # 右牆
+        'right_wall': {
+            'enabled': True,
+            'thickness': 5,
+            'color': (0.72, 0.68, 0.63),
+        },
+        
+        # 地板
         'ground': {
             'enabled': True,
-            'width': 400,       # 地板寬度 (mm)
-            'depth': 500,       # 地板深度 (mm) - 從相機前方延伸到牆壁
             'thickness': 2,     # 地板厚度 (mm)
-            'y_start': 400,     # 地板起始 Y 位置 (mm)
             'color': (0.45, 0.40, 0.35),  # 木地板色
+        },
+        
+        # 天花板
+        'ceiling': {
+            'enabled': True,
+            'thickness': 5,
+            'color': (0.85, 0.83, 0.80),  # 淺色天花板
         },
     },
     
@@ -207,38 +250,68 @@ FURNITURE_COLORS = {
 
 
 # ============================================================
-# 背景物件生成 (牆壁和地板)
+# 背景物件生成 (牆壁、地板、天花板)
 # ============================================================
 
-def create_background_wall():
+def get_room_dimensions():
     """
-    生成背景牆壁
+    計算房間尺寸（根據配置自動計算）
     
-    牆壁位於傢俱後方，面向相機
+    Returns: dict with 'width', 'depth', 'height', 'y_start', 'y_end'
     """
-    if not CONFIG['background']['enabled'] or not CONFIG['background']['wall']['enabled']:
+    scene_cfg = CONFIG['scene']
+    bg_cfg = CONFIG['background']
+    back_wall_cfg = bg_cfg['back_wall']
+    front_wall_cfg = bg_cfg['front_wall']
+    
+    # 房間寬度 = 後牆寬度
+    width = back_wall_cfg['width']
+    
+    # 房間高度 = 後牆高度
+    height = back_wall_cfg['height']
+    
+    # Y 起始位置 = 前牆位置
+    y_start = front_wall_cfg['y_position']
+    
+    # Y 結束位置 = 後牆位置
+    y_end = scene_cfg['furniture_y'] + scene_cfg['furniture_y_jitter'] + back_wall_cfg['y_offset']
+    
+    # 房間深度
+    depth = y_end - y_start
+    
+    return {
+        'width': width,
+        'height': height,
+        'depth': depth,
+        'y_start': y_start,
+        'y_end': y_end,
+    }
+
+
+def create_back_wall():
+    """
+    生成後牆（面向相機）
+    """
+    if not CONFIG['background']['enabled'] or not CONFIG['background']['back_wall']['enabled']:
         return None
     
-    wall_cfg = CONFIG['background']['wall']
-    scene_cfg = CONFIG['scene']
+    wall_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
     
     width = wall_cfg['width']
     height = wall_cfg['height']
     thickness = wall_cfg['thickness']
     
-    # 計算牆壁 Y 位置（傢俱最遠處 + 偏移）
-    wall_y = scene_cfg['furniture_y'] + scene_cfg['furniture_y_jitter'] + wall_cfg['y_offset']
-    
-    # 建立牆壁 (薄板)
+    # 建立牆壁
     bpy.ops.mesh.primitive_cube_add(size=1)
     obj = bpy.context.active_object
-    obj.name = "background_wall"
+    obj.name = "background_wall_back"
     
-    # 設定尺寸: 寬 x 厚 x 高
+    # 尺寸: 寬 x 厚 x 高
     obj.scale = (width, thickness, height)
     
-    # 位置: 中央, 牆壁深度, 高度中心
-    obj.location = (0, wall_y, height / 2)
+    # 位置: 中央, 後方, 高度中心
+    obj.location = (0, room['y_end'], height / 2)
     
     # 應用變換
     bpy.ops.object.select_all(action='DESELECT')
@@ -247,46 +320,162 @@ def create_background_wall():
     bpy.ops.object.transform_apply(scale=True)
     
     # 材質
-    mat = create_diffuse_material('wall', wall_cfg['color'])
+    mat = create_diffuse_material('wall_back', wall_cfg['color'])
     obj.data.materials.append(mat)
     
-    print(f"  + {obj.name} (Y={wall_y:.0f}mm)")
+    print(f"  + {obj.name} (後牆, Y={room['y_end']:.0f}mm)")
     return obj
 
 
-def create_background_ground():
+def create_front_wall():
+    """
+    生成前牆（相機後方）
+    """
+    if not CONFIG['background']['enabled'] or not CONFIG['background']['front_wall']['enabled']:
+        return None
+    
+    wall_cfg = CONFIG['background']['front_wall']
+    back_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
+    
+    width = room['width']
+    height = room['height']
+    thickness = wall_cfg['thickness']
+    
+    # 建立牆壁
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.name = "background_wall_front"
+    
+    # 尺寸: 寬 x 厚 x 高
+    obj.scale = (width, thickness, height)
+    
+    # 位置: 中央, 前方, 高度中心
+    obj.location = (0, room['y_start'], height / 2)
+    
+    # 應用變換
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(scale=True)
+    
+    # 材質
+    mat = create_diffuse_material('wall_front', wall_cfg['color'])
+    obj.data.materials.append(mat)
+    
+    print(f"  + {obj.name} (前牆, Y={room['y_start']:.0f}mm)")
+    return obj
+
+
+def create_left_wall():
+    """
+    生成左牆
+    """
+    if not CONFIG['background']['enabled'] or not CONFIG['background']['left_wall']['enabled']:
+        return None
+    
+    wall_cfg = CONFIG['background']['left_wall']
+    back_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
+    
+    thickness = wall_cfg['thickness']
+    height = room['height']
+    depth = room['depth'] + back_cfg['thickness']  # 延伸到後牆後方
+    
+    # 建立牆壁
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.name = "background_wall_left"
+    
+    # 尺寸: 厚 x 深 x 高
+    obj.scale = (thickness, depth, height)
+    
+    # 位置: 左邊緣, 深度中心, 高度中心
+    x_pos = -room['width'] / 2
+    y_center = room['y_start'] + depth / 2
+    obj.location = (x_pos, y_center, height / 2)
+    
+    # 應用變換
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(scale=True)
+    
+    # 材質
+    mat = create_diffuse_material('wall_left', wall_cfg['color'])
+    obj.data.materials.append(mat)
+    
+    print(f"  + {obj.name} (左牆, X={x_pos:.0f}mm)")
+    return obj
+
+
+def create_right_wall():
+    """
+    生成右牆
+    """
+    if not CONFIG['background']['enabled'] or not CONFIG['background']['right_wall']['enabled']:
+        return None
+    
+    wall_cfg = CONFIG['background']['right_wall']
+    back_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
+    
+    thickness = wall_cfg['thickness']
+    height = room['height']
+    depth = room['depth'] + back_cfg['thickness']
+    
+    # 建立牆壁
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.name = "background_wall_right"
+    
+    # 尺寸: 厚 x 深 x 高
+    obj.scale = (thickness, depth, height)
+    
+    # 位置: 右邊緣, 深度中心, 高度中心
+    x_pos = room['width'] / 2
+    y_center = room['y_start'] + depth / 2
+    obj.location = (x_pos, y_center, height / 2)
+    
+    # 應用變換
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(scale=True)
+    
+    # 材質
+    mat = create_diffuse_material('wall_right', wall_cfg['color'])
+    obj.data.materials.append(mat)
+    
+    print(f"  + {obj.name} (右牆, X={x_pos:.0f}mm)")
+    return obj
+
+
+def create_ground():
     """
     生成地板
-    
-    地板在 Z=0，從相機前方延伸到牆壁
     """
     if not CONFIG['background']['enabled'] or not CONFIG['background']['ground']['enabled']:
         return None
     
     ground_cfg = CONFIG['background']['ground']
-    scene_cfg = CONFIG['scene']
-    wall_cfg = CONFIG['background']['wall']
+    back_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
     
-    width = ground_cfg['width']
-    depth = ground_cfg['depth']
+    width = room['width']
+    depth = room['depth'] + back_cfg['thickness']
     thickness = ground_cfg['thickness']
-    y_start = ground_cfg['y_start']
     
-    # 如果牆壁啟用，地板深度延伸到牆壁位置
-    if CONFIG['background']['wall']['enabled']:
-        wall_y = scene_cfg['furniture_y'] + scene_cfg['furniture_y_jitter'] + wall_cfg['y_offset']
-        depth = wall_y - y_start + wall_cfg['thickness']
-    
-    # 建立地板 (薄板)
+    # 建立地板
     bpy.ops.mesh.primitive_cube_add(size=1)
     obj = bpy.context.active_object
     obj.name = "background_ground"
     
-    # 設定尺寸: 寬 x 深 x 厚
+    # 尺寸: 寬 x 深 x 厚
     obj.scale = (width, depth, thickness)
     
-    # 位置: 中央, 深度中心, 地面以下（厚度的一半）
-    y_center = y_start + depth / 2
+    # 位置: 中央, 深度中心, 地面以下
+    y_center = room['y_start'] + depth / 2
     obj.location = (0, y_center, -thickness / 2)
     
     # 應用變換
@@ -299,8 +488,91 @@ def create_background_ground():
     mat = create_diffuse_material('ground', ground_cfg['color'])
     obj.data.materials.append(mat)
     
-    print(f"  + {obj.name} (Y={y_start:.0f}~{y_start + depth:.0f}mm)")
+    print(f"  + {obj.name} (地板)")
     return obj
+
+
+def create_ceiling():
+    """
+    生成天花板
+    """
+    if not CONFIG['background']['enabled'] or not CONFIG['background']['ceiling']['enabled']:
+        return None
+    
+    ceiling_cfg = CONFIG['background']['ceiling']
+    back_cfg = CONFIG['background']['back_wall']
+    room = get_room_dimensions()
+    
+    width = room['width']
+    depth = room['depth'] + back_cfg['thickness']
+    thickness = ceiling_cfg['thickness']
+    height = room['height']
+    
+    # 建立天花板
+    bpy.ops.mesh.primitive_cube_add(size=1)
+    obj = bpy.context.active_object
+    obj.name = "background_ceiling"
+    
+    # 尺寸: 寬 x 深 x 厚
+    obj.scale = (width, depth, thickness)
+    
+    # 位置: 中央, 深度中心, 天花板高度
+    y_center = room['y_start'] + depth / 2
+    obj.location = (0, y_center, height + thickness / 2)
+    
+    # 應用變換
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(scale=True)
+    
+    # 材質
+    mat = create_diffuse_material('ceiling', ceiling_cfg['color'])
+    obj.data.materials.append(mat)
+    
+    print(f"  + {obj.name} (天花板, Z={height:.0f}mm)")
+    return obj
+
+
+def create_all_backgrounds():
+    """
+    生成所有背景物件（牆壁、地板、天花板）- 封閉 chamber
+    
+    Returns: list of (object, type, material) tuples
+    """
+    objects_info = []
+    
+    # 後牆
+    obj = create_back_wall()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_wall_back'))
+    
+    # 前牆
+    obj = create_front_wall()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_wall_front'))
+    
+    # 左牆
+    obj = create_left_wall()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_wall_left'))
+    
+    # 右牆
+    obj = create_right_wall()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_wall_right'))
+    
+    # 地板
+    obj = create_ground()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_ground'))
+    
+    # 天花板
+    obj = create_ceiling()
+    if obj:
+        objects_info.append((obj, 'background', 'Diffuse_ceiling'))
+    
+    return objects_info
 
 
 # ============================================================
@@ -637,8 +909,13 @@ def main():
     
     print(f"輸出目錄: {output_dir}")
     print(f"場景範圍: {start_idx} ~ {start_idx + num_scenes - 1}")
-    print(f"背景牆壁: {'啟用' if CONFIG['background']['wall']['enabled'] else '停用'}")
-    print(f"背景地板: {'啟用' if CONFIG['background']['ground']['enabled'] else '停用'}")
+    print(f"背景設定 (封閉 chamber):")
+    print(f"  - 後牆: {'啟用' if CONFIG['background']['back_wall']['enabled'] else '停用'}")
+    print(f"  - 前牆: {'啟用' if CONFIG['background']['front_wall']['enabled'] else '停用'}")
+    print(f"  - 左牆: {'啟用' if CONFIG['background']['left_wall']['enabled'] else '停用'}")
+    print(f"  - 右牆: {'啟用' if CONFIG['background']['right_wall']['enabled'] else '停用'}")
+    print(f"  - 地板: {'啟用' if CONFIG['background']['ground']['enabled'] else '停用'}")
+    print(f"  - 天花板: {'啟用' if CONFIG['background']['ceiling']['enabled'] else '停用'}")
     print("=" * 60 + "\n")
     
     success = 0
@@ -652,14 +929,9 @@ def main():
         occupied = []
         objects_info = []
         
-        # === 生成背景 (牆壁和地板) ===
-        wall_obj = create_background_wall()
-        if wall_obj:
-            objects_info.append((wall_obj, 'background', 'Diffuse_wall'))
-        
-        ground_obj = create_background_ground()
-        if ground_obj:
-            objects_info.append((ground_obj, 'background', 'Diffuse_ground'))
+        # === 生成背景 (牆壁、地板、天花板) ===
+        bg_objects = create_all_backgrounds()
+        objects_info.extend(bg_objects)
         
         # === 生成玻璃 ===
         glass_count = random.randint(*CONFIG['glass']['count_range'])
