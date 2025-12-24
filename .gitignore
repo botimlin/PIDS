@@ -12,3 +12,22 @@ training_guidance/Stage_I/training_stage/dataset/
 
 # Pretrained weights (large files)
 training_guidance/Stage_I/training_stage/pretrained/
+
+# Model weights (large files)
+*.pth
+*.pth.gz
+
+# Zip archives (large files)
+*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# TensorBoard logs
+runs/
+*.tfevents.*
+
+# Training logs
+*.log
