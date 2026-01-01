@@ -1,8 +1,20 @@
 """
-PIDS Blender 傢俱隨機擺放腳本 (v17.0)
+PIDS Blender 傢俱隨機擺放腳本 (v17.2)
 =====================================
 
 更新內容:
+v17.2:
+- 新增多種物件類型支援 (clock, lamp, plant, tv, frame, vase, books)
+- 動態檢測可用的 source_* 物件，只使用存在的類型
+- 改進啟動訊息，顯示可用傢俱類型列表
+- 確保缺少的物件不會導致錯誤，只會被跳過
+
+v17.1:
+- 新增隨機種子管理 (random.seed(scene_id))
+- 確保每個場景有獨特且可重現的隨機序列
+- 避免重複執行產生相同場景
+
+v17.0:
 - 新增完整封閉 chamber（前牆、後牆、左牆、右牆、地板、天花板）
 - 移除自動生成傢俱功能，只使用已有素材
 
@@ -54,8 +66,8 @@ from mathutils import Vector
 
 CONFIG = {
     # 生成設定
-    'num_scenes': 1000,
-    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS_3\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes_output',    
+    'num_scenes': 500,
+    'output_dir': 'C:\\Users\\tim\\Documents\\PIDS_3\\PIDS\\training_guidance\\Stage_I\\sampling_stage\\modelling\\scenes_output_V2',    
     
     # 場景範圍 (mm)
     'scene': {
@@ -131,17 +143,27 @@ CONFIG = {
     },
     
     # 傢俱設定 (寬, 深, 高) mm
+    # 注意：只有在 Blender 中存在 source_<name> 物件時才會使用
     'furniture': {
-        'count_range': (2, 4),
+        'count_range': (3, 4),  # 每場景至少 3 個傢俱
         'types': [
+            # 原有傢俱
             {'name': 'shelf',   'size': (80, 30, 180)},
             {'name': 'cabinet', 'size': (100, 40, 90)},
             {'name': 'table',   'size': (80, 50, 45)},
             {'name': 'chair',   'size': (45, 45, 85)},
             {'name': 'sofa',    'size': (120, 60, 70)},
+            # 新增物件 (需在 Blender 中建立 source_* 物件)
+            {'name': 'clock',   'size': (25, 5, 25)},    # 掛鐘/桌鐘
+            {'name': 'lamp',    'size': (20, 20, 40)},   # 檯燈
+            {'name': 'plant',   'size': (25, 25, 50)},   # 盆栽
+            {'name': 'tv',      'size': (80, 10, 50)},   # 電視
+            {'name': 'frame',   'size': (40, 3, 30)},    # 畫框
+            {'name': 'vase',    'size': (15, 15, 30)},   # 花瓶
+            {'name': 'books',   'size': (30, 25, 20)},   # 書本堆
         ],
         'rotation_z': (-15, 15),
-        'scale_range': (0.6, 1.05),
+        'scale_range': (0.85, 1.1),  # 保守縮放範圍
     },
     
     # 碰撞檢測
@@ -241,11 +263,20 @@ def create_diffuse_material(name, color):
 
 # 傢俱顏色對照表
 FURNITURE_COLORS = {
-    'shelf':   (0.35, 0.25, 0.15),
-    'cabinet': (0.50, 0.40, 0.30),
-    'table':   (0.45, 0.35, 0.25),
-    'chair':   (0.40, 0.30, 0.20),
-    'sofa':    (0.30, 0.30, 0.35),
+    # 原有傢俱
+    'shelf':   (0.35, 0.25, 0.15),  # 深木色
+    'cabinet': (0.50, 0.40, 0.30),  # 淺木色
+    'table':   (0.45, 0.35, 0.25),  # 木色
+    'chair':   (0.40, 0.30, 0.20),  # 木色
+    'sofa':    (0.30, 0.30, 0.35),  # 灰色
+    # 新增物件
+    'clock':   (0.20, 0.20, 0.22),  # 深灰/黑色
+    'lamp':    (0.85, 0.82, 0.75),  # 米白色
+    'plant':   (0.25, 0.45, 0.20),  # 綠色
+    'tv':      (0.10, 0.10, 0.12),  # 黑色
+    'frame':   (0.55, 0.45, 0.35),  # 木框色
+    'vase':    (0.70, 0.65, 0.60),  # 陶瓷色
+    'books':   (0.45, 0.35, 0.30),  # 書本棕色
 }
 
 
@@ -696,9 +727,13 @@ def create_furniture(furniture_type, index, occupied):
             
             # 縮放到目標尺寸
             current_h = source_obj.dimensions.z
+            source_scale = source_obj.scale[:]
+            print(f"    [DEBUG] {source_name}: dim.z={current_h:.4f}, source_scale={source_scale}, base_h={base_h}")
+
             if current_h > 0.001:
                 target_h = base_h * scale
                 s = target_h / current_h
+                print(f"    [DEBUG]   -> target_h={target_h:.2f}, final_scale={s:.4f}")
                 obj.scale = (s, s, s)
             
             # 應用變換
@@ -857,38 +892,42 @@ def check_source_objects(verbose=True):
     """
     檢查來源物件是否存在
     只檢查並報告，不自動建立
+
+    Returns: (available_types, missing_names)
+        available_types: 可用的傢俱類型列表 (從 CONFIG 中篩選)
+        missing_names: 缺少的來源物件名稱列表
     """
     if verbose:
         print("檢查來源物件...")
-    
-    # 傢俱來源物件名稱
-    source_names = [
-        'source_shelf',
-        'source_cabinet',
-        'source_table',
-        'source_chair',
-        'source_sofa',
-    ]
-    
+
+    # 從 CONFIG 動態取得所有傢俱類型
+    all_types = CONFIG['furniture']['types']
+
     missing = []
     found = []
-    
-    for source_name in source_names:
+    available_types = []
+
+    for f_type in all_types:
+        source_name = f"source_{f_type['name']}"
         if bpy.data.objects.get(source_name) is None:
             missing.append(source_name)
         else:
             found.append(source_name)
-    
+            available_types.append(f_type)
+
     if verbose:
         for name in found:
             print(f"  ✓ {name}")
         for name in missing:
-            print(f"  ✗ {name} (缺少)")
-    
+            print(f"  ✗ {name} (缺少，將跳過)")
+
     if missing:
-        print(f"  [警告] 缺少 {len(missing)} 個來源物件，這些傢俱類型將無法生成")
-    
-    return missing
+        print(f"  [資訊] 缺少 {len(missing)} 個來源物件，將只使用 {len(found)} 個可用類型")
+
+    if not available_types:
+        print("  [警告] 沒有任何可用的傢俱來源物件！")
+
+    return available_types, missing
 
 
 # ============================================================
@@ -897,18 +936,27 @@ def check_source_objects(verbose=True):
 
 def main():
     print("\n" + "=" * 60)
-    print("PIDS 場景生成器 v17.0 (含背景牆壁/地板)")
+    print("PIDS 場景生成器 v17.2 (支援多種物件類型)")
     print("=" * 60)
-    
+
     setup_blender()
-    check_source_objects()  # 檢查來源物件是否存在
-    
+
+    # 檢查來源物件，取得可用的傢俱類型
+    available_furniture_types, missing = check_source_objects()
+
+    if not available_furniture_types:
+        print("\n[錯誤] 沒有可用的傢俱來源物件，無法生成場景！")
+        print("請在 Blender 中建立 source_* 物件（如 source_shelf, source_table 等）")
+        return
+
     output_dir = CONFIG['output_dir']
     start_idx = get_next_scene_index(output_dir)
     num_scenes = CONFIG['num_scenes']
-    
-    print(f"輸出目錄: {output_dir}")
+
+    print(f"\n輸出目錄: {output_dir}")
     print(f"場景範圍: {start_idx} ~ {start_idx + num_scenes - 1}")
+    print(f"可用傢俱類型: {len(available_furniture_types)} 種")
+    print(f"  {[t['name'] for t in available_furniture_types]}")
     print(f"背景設定 (封閉 chamber):")
     print(f"  - 後牆: {'啟用' if CONFIG['background']['back_wall']['enabled'] else '停用'}")
     print(f"  - 前牆: {'啟用' if CONFIG['background']['front_wall']['enabled'] else '停用'}")
@@ -917,22 +965,29 @@ def main():
     print(f"  - 地板: {'啟用' if CONFIG['background']['ground']['enabled'] else '停用'}")
     print(f"  - 天花板: {'啟用' if CONFIG['background']['ceiling']['enabled'] else '停用'}")
     print("=" * 60 + "\n")
-    
+
     success = 0
-    
+
     for i in range(num_scenes):
         scene_id = start_idx + i
-        print(f"[場景 {scene_id}]")
-        
+
+        # 用場景 ID 設定隨機種子，確保：
+        # 1. 每個場景有獨特的隨機序列
+        # 2. 相同 scene_id 可以重現相同結果
+        # 3. 不同 scene_id 永遠不會產生完全相同的場景
+        random.seed(scene_id)
+
+        print(f"[場景 {scene_id}] (seed={scene_id})")
+
         clear_generated()
-        
+
         occupied = []
         objects_info = []
-        
+
         # === 生成背景 (牆壁、地板、天花板) ===
         bg_objects = create_all_backgrounds()
         objects_info.extend(bg_objects)
-        
+
         # === 生成玻璃 ===
         glass_count = random.randint(*CONFIG['glass']['count_range'])
         for g_idx in range(glass_count):
@@ -942,33 +997,52 @@ def main():
                 occupied.append((pos, aabb))
                 objects_info.append((obj, 'glass', 'Glass_Clear'))
                 print(f"  + {obj.name}")
-        
-        # === 生成傢俱 ===
-        furniture_count = random.randint(*CONFIG['furniture']['count_range'])
-        furniture_types = random.sample(
-            CONFIG['furniture']['types'],
-            min(furniture_count, len(CONFIG['furniture']['types']))
-        )
-        # 大物件優先
-        furniture_types.sort(key=lambda x: x['size'][0] * x['size'][1], reverse=True)
-        
-        for f_idx, f_type in enumerate(furniture_types):
+
+        # === 生成傢俱 (只使用可用的類型，確保至少放置 min_count 個) ===
+        min_count, max_count = CONFIG['furniture']['count_range']
+        target_count = random.randint(min_count, max_count)
+
+        # 確保有足夠的可用類型
+        if len(available_furniture_types) < min_count:
+            print(f"  [警告] 可用傢俱類型 ({len(available_furniture_types)}) 少於最低需求 ({min_count})")
+
+        # 隨機打亂可用類型順序
+        shuffled_types = available_furniture_types.copy()
+        random.shuffle(shuffled_types)
+
+        # 大物件優先排序
+        shuffled_types.sort(key=lambda x: x['size'][0] * x['size'][1], reverse=True)
+
+        placed_count = 0
+        f_idx = 0
+        type_idx = 0
+
+        # 持續嘗試直到放置足夠數量或用盡所有類型
+        while placed_count < target_count and type_idx < len(shuffled_types):
+            f_type = shuffled_types[type_idx]
             obj, pos, aabb = create_furniture(f_type, f_idx + 1, occupied)
             if obj:
                 occupied.append((pos, aabb))
                 mat_name = f"Diffuse_{f_type['name']}"
                 objects_info.append((obj, 'furniture', mat_name))
                 print(f"  + {obj.name}")
-        
+                placed_count += 1
+                f_idx += 1
+            type_idx += 1
+
+        # 檢查是否達到最低需求
+        if placed_count < min_count:
+            print(f"  [警告] 只放置了 {placed_count} 個傢俱 (需求: {min_count})")
+
         # === 匯出（合併為單一 OBJ）===
         if objects_info:
             export_scene_combined(scene_id, output_dir)
             success += 1
         else:
             print(f"  [!] 生成失敗")
-    
+
     clear_generated()
-    
+
     print("\n" + "=" * 60)
     print(f"完成！成功: {success}/{num_scenes}")
     print("=" * 60)

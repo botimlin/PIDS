@@ -4,6 +4,9 @@ Stage I: 合成數據預訓練
 
 Usage:
     python train_pids.py --data_dir ./output/output --output_dir ./checkpoints
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import os
@@ -19,11 +22,17 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 import numpy as np
 
 from pids_dataset import PIDSSyntheticDataset, create_data_loaders
-from pids_model import PIDSStereo, PIDSStereoLoss, build_model
+
+# 使用官方 RAFT-Stereo 模型
+sys.path.append('core')
+from raft_stereo import RAFTStereo
+
+# 保留自定義 Loss
+from pids_model import PIDSStereoLoss
 
 
 class AverageMeter:
@@ -77,7 +86,17 @@ class Trainer:
         self.scheduler = self._build_scheduler()
 
         # 混合精度訓練
-        self.scaler = GradScaler() if args.mixed_precision else None
+        # BFloat16: 數值範圍同 FP32 (不會 Loss 爆炸)，顯存同 FP16 (不會 OOM)
+        # H100 對 BF16 有特殊優化，速度最快
+        if args.bf16:
+            self.amp_dtype = torch.bfloat16
+            self.scaler = None  # BF16 不需要 GradScaler
+        elif args.mixed_precision:
+            self.amp_dtype = torch.float16
+            self.scaler = GradScaler('cuda')
+        else:
+            self.amp_dtype = None
+            self.scaler = None
 
         # 載入數據
         self.train_loader, self.val_loader = self._build_data_loaders()
@@ -85,7 +104,8 @@ class Trainer:
         # 訓練狀態
         self.start_epoch = 0
         self.global_step = 0
-        self.best_epe = float('inf')
+        self.best_glass_epe = float('inf')  # 使用 Glass EPE 作為最佳模型標準
+        self.best_composite_score = float('inf')  # 複合式指標 (Glass EPE + D1_weight * D1_error)
 
         # 載入檢查點（如果有）
         if args.resume:
@@ -95,21 +115,39 @@ class Trainer:
         self._save_config()
 
     def _build_model(self) -> nn.Module:
-        """建立模型"""
-        model_cfg = {
-            'hidden_dim': self.args.hidden_dim,
-            'context_dim': self.args.context_dim,
-            'feature_dim': self.args.feature_dim,
-            'corr_levels': self.args.corr_levels,
-            'corr_radius': self.args.corr_radius,
-            'iters': self.args.iters,
-        }
+        """建立模型 - 使用官方 RAFT-Stereo"""
+        # 創建 args 對象給 RAFTStereo (官方格式)
+        class ModelArgs:
+            pass
 
-        model = build_model(model_cfg)
+        model_args = ModelArgs()
+        # 官方用 hidden_dims (list)，不是 hidden_dim
+        model_args.hidden_dims = [self.args.hidden_dim] * 3  # [128, 128, 128]
+        model_args.context_dims = [self.args.context_dim] * 3
+        model_args.corr_levels = self.args.corr_levels
+        model_args.corr_radius = self.args.corr_radius
+        model_args.n_downsample = 2  # 官方預設
+        model_args.slow_fast_gru = False  # 官方預設
+        model_args.n_gru_layers = 3  # 官方預設
+        model_args.mixed_precision = self.args.mixed_precision or self.args.bf16
+        model_args.shared_backbone = False  # 官方預設
+        model_args.context_norm = 'batch'  # 官方預設
+        model_args.corr_implementation = 'reg'  # 官方預設 (reg, alt, reg_cuda, alt_cuda)
+
+        model = RAFTStereo(model_args)
 
         # 載入預訓練權重 (論文: θ_init ← θ_pre from Scene Flow)
         if self.args.pretrained:
             self._load_pretrained_weights(model, self.args.pretrained)
+
+        # 凍結 Feature Encoder (減少過擬合，只微調 context + GRU)
+        if self.args.freeze_fnet:
+            frozen_count = 0
+            for name, param in model.named_parameters():
+                if 'fnet' in name:
+                    param.requires_grad = False
+                    frozen_count += 1
+            print(f"Frozen {frozen_count} parameters in feature encoder (fnet)")
 
         # 多 GPU
         if torch.cuda.device_count() > 1:
@@ -224,12 +262,12 @@ class Trainer:
         return scheduler
 
     def _build_data_loaders(self):
-        """建立數據載入器"""
+        """建立數據載入器 (使用全圖，不 crop)"""
         train_loader, val_loader = create_data_loaders(
             data_dir=self.args.data_dir,
             batch_size=self.args.batch_size,
             num_workers=self.args.num_workers,
-            crop_size=(self.args.crop_height, self.args.crop_width),
+            val_split=self.args.val_split,
         )
 
         print(f"Training samples: {len(train_loader.dataset)}")
@@ -255,7 +293,8 @@ class Trainer:
             'global_step': self.global_step,
             'model_state_dict': model_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'best_epe': self.best_epe,
+            'best_glass_epe': self.best_glass_epe,
+            'best_composite_score': self.best_composite_score,
             'args': vars(self.args),
         }
 
@@ -272,7 +311,7 @@ class Trainer:
         # 保存最佳模型
         if is_best:
             torch.save(checkpoint, self.output_dir / 'checkpoint_best.pth')
-            print(f"  -> Saved best model (EPE: {self.best_epe:.3f})")
+            print(f"  -> Saved best model (Glass EPE: {self.best_glass_epe:.3f})")
 
     def _load_checkpoint(self, path: str):
         """載入檢查點"""
@@ -291,9 +330,12 @@ class Trainer:
 
         self.start_epoch = checkpoint['epoch'] + 1
         self.global_step = checkpoint['global_step']
-        self.best_epe = checkpoint.get('best_epe', float('inf'))
+        # 兼容舊 checkpoint (best_epe) 和新 checkpoint (best_glass_epe)
+        self.best_glass_epe = checkpoint.get('best_glass_epe', checkpoint.get('best_epe', float('inf')))
+        self.best_composite_score = checkpoint.get('best_composite_score', float('inf'))
 
         print(f"Resumed from epoch {self.start_epoch}, step {self.global_step}")
+        print(f"Best Glass EPE: {self.best_glass_epe:.3f}, Best Composite: {self.best_composite_score:.3f}")
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """訓練一個 epoch"""
@@ -303,10 +345,13 @@ class Trainer:
             'loss': AverageMeter(),
             'epe': AverageMeter(),
             'd1': AverageMeter(),
+            'd5': AverageMeter(),
+            'd10': AverageMeter(),
             'glass_epe': AverageMeter(),
         }
 
         start_time = time.time()
+        accum_steps = self.args.accumulation_steps
 
         for batch_idx, batch in enumerate(self.train_loader):
             # 檢查是否達到最大步數
@@ -320,60 +365,107 @@ class Trainer:
             valid_mask = batch['valid_mask'].to(self.device)
             glass_mask = batch['glass_mask'].to(self.device)
 
-            self.optimizer.zero_grad()
-
-            # 混合精度訓練
+            # 混合精度訓練 (FP16 / BF16 / FP32)
             if self.scaler:
-                with autocast():
-                    disp_preds = self.model(left, right, iters=self.args.iters)
+                # FP16 模式 (需要 GradScaler)
+                with autocast('cuda', dtype=self.amp_dtype):
+                    flow_preds = self.model(left, right, iters=self.args.iters)
+                    disp_preds = [-f for f in flow_preds]
                     loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                    loss = loss / accum_steps
 
                 self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                disp_preds = self.model(left, right, iters=self.args.iters)
-                loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+
+                if (batch_idx + 1) % accum_steps == 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+
+                    if self.scheduler:
+                        self.scheduler.step()
+
+                    self.global_step += 1
+
+            elif self.amp_dtype is not None:
+                # BF16 模式 (不需要 GradScaler，數值範圍同 FP32)
+                with autocast('cuda', dtype=self.amp_dtype):
+                    flow_preds = self.model(left, right, iters=self.args.iters)
+                    disp_preds = [-f for f in flow_preds]
+                    loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                    loss = loss / accum_steps
 
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
-                self.optimizer.step()
 
-            # 更新學習率
-            if self.scheduler:
-                self.scheduler.step()
+                if (batch_idx + 1) % accum_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                    if self.scheduler:
+                        self.scheduler.step()
+
+                    self.global_step += 1
+
+            else:
+                # FP32 模式 (全精度)
+                flow_preds = self.model(left, right, iters=self.args.iters)
+                disp_preds = [-f for f in flow_preds]
+                loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                loss = loss / accum_steps
+
+                loss.backward()
+
+                if (batch_idx + 1) % accum_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.clip_grad)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                    if self.scheduler:
+                        self.scheduler.step()
+
+                    self.global_step += 1
 
             # 更新統計
             batch_size = left.size(0)
             meters['loss'].update(metrics['loss'], batch_size)
             meters['epe'].update(metrics['epe'], batch_size)
             meters['d1'].update(metrics['d1'], batch_size)
+            meters['d5'].update(metrics.get('d5', 0), batch_size)
+            meters['d10'].update(metrics.get('d10', 0), batch_size)
             meters['glass_epe'].update(metrics['glass_epe'], batch_size)
 
-            # TensorBoard
-            if self.global_step % self.args.log_freq == 0:
+            # TensorBoard (每個 global step)
+            if (batch_idx + 1) % accum_steps == 0 and self.global_step % self.args.log_freq == 0:
                 lr = self.optimizer.param_groups[0]['lr']
                 self.writer.add_scalar('train/loss', metrics['loss'], self.global_step)
                 self.writer.add_scalar('train/epe', metrics['epe'], self.global_step)
                 self.writer.add_scalar('train/d1', metrics['d1'], self.global_step)
+                self.writer.add_scalar('train/d5', metrics.get('d5', 0), self.global_step)
+                self.writer.add_scalar('train/d10', metrics.get('d10', 0), self.global_step)
                 self.writer.add_scalar('train/glass_epe', metrics['glass_epe'], self.global_step)
                 self.writer.add_scalar('train/lr', lr, self.global_step)
 
             # 打印進度
-            if self.global_step % self.args.print_freq == 0:
+            if (batch_idx + 1) % accum_steps == 0 and self.global_step % self.args.print_freq == 0:
                 elapsed = time.time() - start_time
                 lr = self.optimizer.param_groups[0]['lr']
+                eff_batch = self.args.batch_size * accum_steps
                 print(f"  Step {self.global_step:6d} | "
                       f"Loss: {meters['loss'].avg:.4f} | "
                       f"EPE: {meters['epe'].avg:.3f} | "
                       f"D1: {meters['d1'].avg:.2f}% | "
                       f"Glass EPE: {meters['glass_epe'].avg:.3f} | "
                       f"LR: {lr:.6f} | "
+                      f"EffBatch: {eff_batch} | "
                       f"Time: {elapsed:.1f}s")
 
-            self.global_step += 1
+            # 按 step 驗證 (更密集以抓 best checkpoint)
+            if (batch_idx + 1) % accum_steps == 0 and self.global_step % self.args.val_freq == 0 and self.global_step > 0:
+                val_metrics = self.validate()
+                self._log_validation(val_metrics)
+                self.model.train()  # 切回訓練模式
 
         return {k: v.avg for k, v in meters.items()}
 
@@ -387,6 +479,8 @@ class Trainer:
             'epe': AverageMeter(),
             'd1': AverageMeter(),
             'd3': AverageMeter(),
+            'd5': AverageMeter(),
+            'd10': AverageMeter(),
             'glass_epe': AverageMeter(),
         }
 
@@ -398,7 +492,8 @@ class Trainer:
             glass_mask = batch['glass_mask'].to(self.device)
 
             # 使用更多迭代進行驗證
-            disp_preds = self.model(left, right, iters=self.args.iters + 4)
+            flow_preds = self.model(left, right, iters=self.args.iters + 4)
+            disp_preds = [-f for f in flow_preds]
             loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
 
             batch_size = left.size(0)
@@ -406,14 +501,85 @@ class Trainer:
             meters['epe'].update(metrics['epe'], batch_size)
             meters['d1'].update(metrics['d1'], batch_size)
             meters['d3'].update(metrics['d3'], batch_size)
+            meters['d5'].update(metrics.get('d5', 0), batch_size)
+            meters['d10'].update(metrics.get('d10', 0), batch_size)
             meters['glass_epe'].update(metrics['glass_epe'], batch_size)
 
         return {k: v.avg for k, v in meters.items()}
+
+    def _log_validation(self, val_metrics: Dict[str, float]):
+        """記錄驗證結果並保存 checkpoint"""
+        # 計算複合式指標: Glass EPE + d1_weight * D1_error_rate
+        # D1 是錯誤率(越低越好)，所以直接加權
+        # 這樣可以同時考慮 Glass EPE (精度) 和 D1 (閾值誤差率)
+        d1_error = val_metrics['d1']  # 已經是百分比形式
+        composite_score = val_metrics['glass_epe'] + self.args.d1_weight * d1_error
+
+        print(f"\n  [Val @ Step {self.global_step}] "
+              f"Loss: {val_metrics['loss']:.4f} | "
+              f"EPE: {val_metrics['epe']:.3f} | "
+              f"D1: {val_metrics['d1']:.2f}% | "
+              f"D3: {val_metrics['d3']:.2f}% | "
+              f"D5: {val_metrics.get('d5', 0):.2f}% | "
+              f"D10: {val_metrics.get('d10', 0):.2f}% | "
+              f"Glass EPE: {val_metrics['glass_epe']:.3f} | "
+              f"Composite: {composite_score:.3f}\n")
+
+        # TensorBoard
+        self.writer.add_scalar('val/loss', val_metrics['loss'], self.global_step)
+        self.writer.add_scalar('val/epe', val_metrics['epe'], self.global_step)
+        self.writer.add_scalar('val/d1', val_metrics['d1'], self.global_step)
+        self.writer.add_scalar('val/d3', val_metrics['d3'], self.global_step)
+        self.writer.add_scalar('val/d5', val_metrics.get('d5', 0), self.global_step)
+        self.writer.add_scalar('val/d10', val_metrics.get('d10', 0), self.global_step)
+        self.writer.add_scalar('val/glass_epe', val_metrics['glass_epe'], self.global_step)
+        self.writer.add_scalar('val/composite_score', composite_score, self.global_step)
+
+        # 檢查是否為最佳 (使用複合式指標)
+        is_best = composite_score < self.best_composite_score
+        if is_best:
+            old_best = self.best_composite_score
+            self.best_composite_score = composite_score
+            # 同時更新 best_glass_epe (用於兼容舊 checkpoint)
+            if val_metrics['glass_epe'] < self.best_glass_epe:
+                self.best_glass_epe = val_metrics['glass_epe']
+            print(f"  *** New best Composite Score: {self.best_composite_score:.3f} "
+                  f"(Glass EPE: {val_metrics['glass_epe']:.3f}, D1: {d1_error:.2f}%) ***\n")
+
+        # 保存 checkpoint
+        self._save_checkpoint_by_step(is_best)
+
+    def _save_checkpoint_by_step(self, is_best: bool = False):
+        """按 step 保存 checkpoint"""
+        model_state = self.model.module.state_dict() if hasattr(self.model, 'module') else self.model.state_dict()
+
+        checkpoint = {
+            'global_step': self.global_step,
+            'model_state_dict': model_state,
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'best_glass_epe': self.best_glass_epe,
+            'best_composite_score': self.best_composite_score,
+            'args': vars(self.args),
+        }
+
+        if self.scheduler:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+
+        # 保存最新 checkpoint
+        torch.save(checkpoint, self.output_dir / 'checkpoint_latest.pth')
+
+        # 保存最佳模型
+        if is_best:
+            torch.save(checkpoint, self.output_dir / 'checkpoint_best.pth')
 
     def train(self):
         """主訓練循環"""
         print("=" * 60)
         print("PIDS Training - Stage I (Synthetic Pre-training)")
+        print("=" * 60)
+        eff_batch = self.args.batch_size * self.args.accumulation_steps
+        print(f"Effective batch size: {eff_batch} (batch={self.args.batch_size} x accum={self.args.accumulation_steps})")
+        print(f"Validation every {self.args.val_freq} steps")
         print("=" * 60)
 
         epoch = self.start_epoch
@@ -421,41 +587,16 @@ class Trainer:
             print(f"\nEpoch {epoch + 1}")
             print("-" * 40)
 
-            # 訓練
+            # 訓練 (驗證已在 train_epoch 內按 step 進行)
             train_metrics = self.train_epoch(epoch)
 
-            # 驗證
-            if (epoch + 1) % self.args.val_freq == 0:
-                val_metrics = self.validate()
-
-                print(f"\n  Validation | "
-                      f"Loss: {val_metrics['loss']:.4f} | "
-                      f"EPE: {val_metrics['epe']:.3f} | "
-                      f"D1: {val_metrics['d1']:.2f}% | "
-                      f"D3: {val_metrics['d3']:.2f}% | "
-                      f"Glass EPE: {val_metrics['glass_epe']:.3f}")
-
-                # TensorBoard
-                self.writer.add_scalar('val/loss', val_metrics['loss'], self.global_step)
-                self.writer.add_scalar('val/epe', val_metrics['epe'], self.global_step)
-                self.writer.add_scalar('val/d1', val_metrics['d1'], self.global_step)
-                self.writer.add_scalar('val/d3', val_metrics['d3'], self.global_step)
-                self.writer.add_scalar('val/glass_epe', val_metrics['glass_epe'], self.global_step)
-
-                # 檢查是否為最佳
-                is_best = val_metrics['epe'] < self.best_epe
-                if is_best:
-                    self.best_epe = val_metrics['epe']
-
-                # 保存檢查點
-                self._save_checkpoint(epoch, is_best)
-            else:
-                self._save_checkpoint(epoch)
+            # 每個 epoch 結束時也保存一次
+            self._save_checkpoint(epoch, is_best=False)
 
             epoch += 1
 
         print("\n" + "=" * 60)
-        print(f"Training completed! Best EPE: {self.best_epe:.3f}")
+        print(f"Training completed! Best Glass EPE: {self.best_glass_epe:.3f}")
         print(f"Checkpoints saved to: {self.output_dir}")
         print("=" * 60)
 
@@ -481,10 +622,12 @@ def parse_args():
                         help='Number of iterations for disparity refinement')
 
     # 訓練
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--accumulation_steps', type=int, default=1,
+                        help='Gradient accumulation steps (effective batch = batch_size * accumulation_steps)')
     parser.add_argument('--num_steps', type=int, default=100000,
                         help='Total number of training steps')
-    parser.add_argument('--lr', type=float, default=0.0002,
+    parser.add_argument('--lr', type=float, default=0.0001,
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.00001)
     parser.add_argument('--adam_eps', type=float, default=1e-6,
@@ -494,7 +637,9 @@ def parse_args():
                         help='Loss weight decay factor')
     parser.add_argument('--glass_weight', type=float, default=1.0,
                         help='Extra weight for glass region loss (1.0=no extra weight, 論文未使用此功能)')
-    parser.add_argument('--max_disp', type=float, default=192.0)
+    parser.add_argument('--max_disp', type=float, default=576.0)
+    parser.add_argument('--d1_weight', type=float, default=0.1,
+                        help='Weight for D1 in composite score (composite = glass_epe + d1_weight * d1_error)')
 
     # 優化器
     parser.add_argument('--optimizer', type=str, default='adamw',
@@ -502,22 +647,26 @@ def parse_args():
     parser.add_argument('--scheduler', type=str, default='onecycle',
                         choices=['onecycle', 'cosine', 'none'])
 
-    # 數據增強
-    parser.add_argument('--crop_height', type=int, default=320)
-    parser.add_argument('--crop_width', type=int, default=480)
+    # 數據載入 (不使用 crop，保持全圖以維持全局幾何上下文)
     parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--val_split', type=float, default=0.2,
+                        help='Validation split ratio (預設 0.2 = 80/20 分割)')
 
     # 其他
     parser.add_argument('--mixed_precision', action='store_true',
-                        help='Use mixed precision training')
+                        help='Use mixed precision training (FP16)')
+    parser.add_argument('--bf16', action='store_true',
+                        help='Use BFloat16 mixed precision (推薦 H100，數值範圍同 FP32 但顯存同 FP16)')
+    parser.add_argument('--freeze_fnet', action='store_true',
+                        help='Freeze feature encoder (fnet), only train context encoder + GRU')
     parser.add_argument('--pretrained', type=str, default=None,
                         help='Path to pretrained weights (e.g., RAFT-Stereo Scene Flow)')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume training from')
     parser.add_argument('--log_freq', type=int, default=10)
     parser.add_argument('--print_freq', type=int, default=100)
-    parser.add_argument('--val_freq', type=int, default=1,
-                        help='Validate every N epochs')
+    parser.add_argument('--val_freq', type=int, default=500,
+                        help='Validate every N steps (更密集以抓 best checkpoint)')
     parser.add_argument('--save_freq', type=int, default=5,
                         help='Save checkpoint every N epochs')
 

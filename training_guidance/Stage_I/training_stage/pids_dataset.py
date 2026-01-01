@@ -100,7 +100,7 @@ class PIDSSyntheticDataset(Dataset):
         exclude_failed: bool = True,
         failed_scenes: Optional[List[str]] = None,
         augment: bool = True,
-        crop_size: Tuple[int, int] = (320, 480),  # (H, W)
+        val_split: float = 0.2,
     ):
         """
         Args:
@@ -110,15 +110,15 @@ class PIDSSyntheticDataset(Dataset):
             max_disparity: 最大視差值（用於正規化）
             exclude_failed: 是否排除品質檢測未通過的場景
             failed_scenes: 未通過場景列表
-            augment: 是否進行數據增強
-            crop_size: 隨機裁切大小 (H, W)
+            augment: 是否進行數據增強 (亮度/對比度/翻轉，不含 crop)
+            val_split: 驗證集比例 (預設 0.2 = 80/20 分割)
         """
+        self.val_split = val_split
         self.data_dir = Path(data_dir)
         self.split = split
         self.transform = transform
         self.max_disparity = max_disparity
         self.augment = augment and (split == 'train')
-        self.crop_size = crop_size
 
         # 自動偵測目錄結構
         self._detect_directory_structure()
@@ -134,17 +134,19 @@ class PIDSSyntheticDataset(Dataset):
         # 掃描場景
         self.scenes = self._scan_scenes()
 
-        # 分割訓練/驗證集 (90/10)
+        # 分割訓練/驗證集 (固定種子確保可重現)
         np.random.seed(42)
         indices = np.random.permutation(len(self.scenes))
-        split_idx = int(len(indices) * 0.9)
+        split_idx = int(len(indices) * (1 - self.val_split))
 
         if split == 'train':
             self.scenes = [self.scenes[i] for i in indices[:split_idx]]
         else:
             self.scenes = [self.scenes[i] for i in indices[split_idx:]]
 
-        print(f"[PIDSDataset] {split} split: {len(self.scenes)} scenes")
+        train_ratio = int((1 - self.val_split) * 100)
+        val_ratio = int(self.val_split * 100)
+        print(f"[PIDSDataset] {split} split: {len(self.scenes)} scenes ({train_ratio}/{val_ratio} split)")
         print(f"[PIDSDataset] Directory structure: {self.dir_structure}")
 
     def _detect_directory_structure(self):
@@ -219,6 +221,12 @@ class PIDSSyntheticDataset(Dataset):
         right = EXRReader.read_rgb(str(right_path))
         disparity = EXRReader.read_depth(str(disp_path))
 
+        # 處理單通道圖像：擴展為 3 通道
+        if left.ndim == 2:
+            left = np.stack([left, left, left], axis=-1)
+        if right.ndim == 2:
+            right = np.stack([right, right, right], axis=-1)
+
         # 載入玻璃遮罩（如果存在）
         if mask_path.exists():
             mask = EXRReader.read_depth(str(mask_path))
@@ -245,31 +253,6 @@ class PIDSSyntheticDataset(Dataset):
         img = np.clip(img, 0, 1)
         return img
 
-    def _random_crop(
-        self,
-        left: np.ndarray,
-        right: np.ndarray,
-        disparity: np.ndarray,
-        mask: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """隨機裁切"""
-        h, w = left.shape[:2]
-        crop_h, crop_w = self.crop_size
-
-        if h < crop_h or w < crop_w:
-            # 如果圖像太小，直接 resize
-            return left, right, disparity, mask
-
-        # 隨機選擇裁切位置
-        y = np.random.randint(0, h - crop_h + 1)
-        x = np.random.randint(0, w - crop_w + 1)
-
-        left = left[y:y+crop_h, x:x+crop_w]
-        right = right[y:y+crop_h, x:x+crop_w]
-        disparity = disparity[y:y+crop_h, x:x+crop_w]
-        mask = mask[y:y+crop_h, x:x+crop_w]
-
-        return left, right, disparity, mask
 
     def _augment(
         self,
@@ -315,20 +298,19 @@ class PIDSSyntheticDataset(Dataset):
         left = self._normalize_image(left)
         right = self._normalize_image(right)
 
-        # 數據增強
+        # 數據增強 (只做亮度/對比度/翻轉，不做 crop 以保持全局上下文)
         if self.augment:
-            left, right, disparity, mask = self._random_crop(left, right, disparity, mask)
             left, right, disparity, mask = self._augment(left, right, disparity, mask)
 
         # 確保範圍正確
         left = np.clip(left, 0, 1)
         right = np.clip(right, 0, 1)
 
-        # 轉換為 tensor (C, H, W)
-        left_tensor = torch.from_numpy(left).permute(2, 0, 1).float()
-        right_tensor = torch.from_numpy(right).permute(2, 0, 1).float()
-        disparity_tensor = torch.from_numpy(disparity).float().unsqueeze(0)
-        mask_tensor = torch.from_numpy(mask).float().unsqueeze(0)
+        # 轉換為 tensor (C, H, W) - 使用 .copy() 確保 array 可寫
+        left_tensor = torch.from_numpy(left.copy()).permute(2, 0, 1).float()
+        right_tensor = torch.from_numpy(right.copy()).permute(2, 0, 1).float()
+        disparity_tensor = torch.from_numpy(disparity.copy()).float().unsqueeze(0)
+        mask_tensor = torch.from_numpy(mask.copy()).float().unsqueeze(0)
 
         # 創建有效深度遮罩
         valid_mask = (disparity_tensor > 0) & (disparity_tensor < self.max_disparity)
@@ -347,16 +329,18 @@ def create_data_loaders(
     data_dir: str,
     batch_size: int = 4,
     num_workers: int = 4,
-    crop_size: Tuple[int, int] = (320, 480),
+    val_split: float = 0.2,
 ) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """
     創建訓練和驗證 DataLoader
+
+    注意：不使用 crop，保持全圖輸入以維持全局幾何上下文 (符合 PIDS 論文設計)
 
     Args:
         data_dir: 數據目錄
         batch_size: Batch 大小
         num_workers: 數據載入 worker 數量
-        crop_size: 裁切大小
+        val_split: 驗證集比例 (預設 0.2 = 80/20 分割)
 
     Returns:
         (train_loader, val_loader)
@@ -365,14 +349,14 @@ def create_data_loaders(
         data_dir=data_dir,
         split='train',
         augment=True,
-        crop_size=crop_size,
+        val_split=val_split,
     )
 
     val_dataset = PIDSSyntheticDataset(
         data_dir=data_dir,
         split='val',
         augment=False,
-        crop_size=crop_size,
+        val_split=val_split,
     )
 
     train_loader = torch.utils.data.DataLoader(

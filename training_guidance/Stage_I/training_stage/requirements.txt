@@ -2,8 +2,8 @@
 # Install: pip install -r requirements.txt
 
 # PyTorch (install according to your CUDA version from pytorch.org)
-# torch>=2.0.0
-# torchvision>=0.15.0
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Core dependencies
 numpy>=1.21.0
@@ -20,3 +20,6 @@ tqdm>=4.64.0
 
 # Optional: For visualization
 matplotlib>=3.5.0
+
+# Optimization
+opt_einsum>=3.3.0

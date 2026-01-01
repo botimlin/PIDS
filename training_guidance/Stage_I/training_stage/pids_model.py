@@ -1,6 +1,9 @@
 """
 PIDS Stereo Model - Based on RAFT-Stereo Architecture
 用於偏振立體匹配的深度學習模型
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import torch
@@ -377,7 +380,7 @@ class PIDSStereoLoss(nn.Module):
     def __init__(
         self,
         gamma: float = 0.9,
-        max_disp: float = 192.0,
+        max_disp: float = 576.0,
         glass_weight: float = 2.0,
     ):
         super().__init__()
@@ -431,14 +434,17 @@ class PIDSStereoLoss(nn.Module):
             epe = torch.abs(final_pred - disp_gt)
             epe = (epe * valid_mask).sum() / (valid_mask.sum() + 1e-6)
 
-            # 閾值誤差率
-            thresh_1 = ((torch.abs(final_pred - disp_gt) > 1.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
-            thresh_3 = ((torch.abs(final_pred - disp_gt) > 3.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
+            # 閾值誤差率 (D1, D3, D5, D10)
+            abs_error = torch.abs(final_pred - disp_gt)
+            thresh_1 = ((abs_error > 1.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
+            thresh_3 = ((abs_error > 3.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
+            thresh_5 = ((abs_error > 5.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
+            thresh_10 = ((abs_error > 10.0) * valid_mask).sum() / (valid_mask.sum() + 1e-6)
 
             # 玻璃區域誤差
             if glass_mask is not None and glass_mask.sum() > 0:
                 glass_valid = glass_mask * valid_mask
-                glass_epe = (torch.abs(final_pred - disp_gt) * glass_valid).sum() / (glass_valid.sum() + 1e-6)
+                glass_epe = (abs_error * glass_valid).sum() / (glass_valid.sum() + 1e-6)
             else:
                 glass_epe = torch.tensor(0.0)
 
@@ -447,6 +453,8 @@ class PIDSStereoLoss(nn.Module):
             'epe': epe.item(),
             'd1': thresh_1.item() * 100,  # 百分比
             'd3': thresh_3.item() * 100,
+            'd5': thresh_5.item() * 100,
+            'd10': thresh_10.item() * 100,
             'glass_epe': glass_epe.item(),
         }
 

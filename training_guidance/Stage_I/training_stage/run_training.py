@@ -36,35 +36,31 @@ def run_training(mode='full', **kwargs):
         mode: 'test' (快速測試), 'full' (完整訓練), 'custom' (自定義)
         **kwargs: 額外的命令行參數
     """
-    # 預設配置
+    # 預設配置 (不使用 crop，保持全圖以維持全局幾何上下文)
     configs = {
         'test': {
             'batch_size': 2,
             'num_steps': 500,
             'iters': 6,
-            'crop_height': 256,
-            'crop_width': 384,
             'print_freq': 50,
             'val_freq': 1,
             'save_freq': 1,
         },
         'full': {
-            'batch_size': 4,
-            'num_steps': 100000,
+            'batch_size': 16,
+            'accumulation_steps': 1,
+            'num_steps': 50000,
             'iters': 12,
-            'crop_height': 320,
-            'crop_width': 480,
-            'lr': 0.0002,
+            'lr': 0.0001,
+            'scheduler': 'cosine',
             'print_freq': 100,
-            'val_freq': 1,
+            'val_freq': 500,
             'save_freq': 5,
         },
         'small': {
             'batch_size': 4,
             'num_steps': 20000,
             'iters': 12,
-            'crop_height': 320,
-            'crop_width': 480,
             'lr': 0.0002,
             'print_freq': 100,
             'val_freq': 1,

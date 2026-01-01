@@ -1,0 +1,39 @@
+{
+  "version": "1.2.0",
+  "description": "PIDS 紋理資產索引 - 用於 blender_furniture_randomizer_v18.py",
+  "texture_format": "JPG, 4K tileable",
+  "categories": {
+    "furniture": {
+      "description": "傢俱紋理 - 每場景隨機分配",
+      "textures": [
+        "furniture/concrete_panels_diff_4k.jpg",
+        "furniture/dark_wood_diff_4k.jpg",
+        "furniture/plywood_diff_4k.jpg",
+        "furniture/wood_cabinet_worn_long_diff_4k.jpg",
+        "furniture/wood_shutter_diff_4k.jpg",
+        "furniture/wood_table_worn_diff_4k.jpg"
+      ]
+    },
+    "floor": {
+      "description": "地板紋理 - 每場景隨機分配",
+      "textures": [
+        "floor/brown_floor_tiles_diff_4k.jpg",
+        "floor/granite_tile_04_diff_4k.jpg",
+        "floor/wood_floor_diff_4k.jpg"
+      ]
+    },
+    "wall": {
+      "description": "牆壁+天花板紋理 - 每場景統一隨機",
+      "textures": [
+        "wall/concrete_floor_02_diff_4k.jpg",
+        "wall/dirty_concrete_diff_4k.jpg",
+        "wall/plastered_wall_03_diff_4k.jpg",
+        "wall/worn_mossy_plasterwall_diff_4k.jpg"
+      ]
+    }
+  },
+  "notes": {
+    "wall_ceiling_unified": "牆壁和天花板共用同一紋理",
+    "fallback": "如果紋理不存在，會 fallback 到純色材質"
+  }
+}

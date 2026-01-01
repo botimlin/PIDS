@@ -1,5 +1,27 @@
 # PIDS Renderer V3 文檔
 
+> Copyright (c) 2025-2026 Po-Ting Lin
+> Released under the MIT License (see LICENSE file).
+
+---
+
+## ⚠️ 已封存 (ARCHIVED)
+
+**此版本已被 V4 取代。**
+
+當前使用版本：
+- 偏振渲染：`rendering_v4/pids_renderer_textured.py` (v4.0.0)
+- 無偏振渲染：`rendering_v4/pids_renderer_textured_nopol.py` (v4.0.0-nopol)
+
+V4 相比 V3 的改進：
+- 支援紋理貼圖 (map_Kd)
+- 更強的隨機化數據增強
+- 更完整的品質報告
+
+此文檔保留供歷史參考。
+
+---
+
 ## 概述
 
 PIDS Renderer V3 是專為 PIDS (Physics-Informed Deep Stereo) 專案設計的偏振立體渲染器，用於生成 Stage 1 合成訓練數據。
