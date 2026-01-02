@@ -1,6 +1,9 @@
 """
 PIDS Synthetic Dataset Loader
 用於載入 Mitsuba 渲染的合成偏振立體數據
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import os
@@ -96,7 +99,7 @@ class PIDSSyntheticDataset(Dataset):
         data_dir: str,
         split: str = 'train',
         transform = None,
-        max_disparity: float = 192.0,
+        max_disparity: float = 576.0,
         exclude_failed: bool = True,
         failed_scenes: Optional[List[str]] = None,
         augment: bool = True,
@@ -158,6 +161,13 @@ class PIDSSyntheticDataset(Dataset):
             self.depth_dir = self.data_dir.parent / 'ground_truth'
             self.mask_dir = self.data_dir.parent / 'masks'
             self.dir_structure = 'organized'
+        elif (self.data_dir / 'train' / 'stereo_pairs').exists():
+            # 新結構：dataset/train/stereo_pairs (只讀取訓練集)
+            self.stereo_dir = self.data_dir / 'train' / 'stereo_pairs'
+            self.depth_dir = self.data_dir / 'train' / 'ground_truth'
+            self.mask_dir = self.data_dir / 'train' / 'masks'
+            self.dir_structure = 'train_split'
+            print(f"[PIDSDataset] Using train/ subdirectory (ignoring test/)")
         elif (self.data_dir / 'stereo_pairs').exists():
             # 傳入的是 dataset 根目錄
             self.stereo_dir = self.data_dir / 'stereo_pairs'

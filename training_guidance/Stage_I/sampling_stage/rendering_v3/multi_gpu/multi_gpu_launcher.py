@@ -4,6 +4,9 @@ Multi-GPU Launcher for PIDS Renderer
 =====================================
 
 這個腳本只做調度，不 import 任何 CUDA 相關模組。
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import os

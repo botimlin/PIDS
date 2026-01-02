@@ -635,8 +635,8 @@ def parse_args():
     parser.add_argument('--clip_grad', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.9,
                         help='Loss weight decay factor')
-    parser.add_argument('--glass_weight', type=float, default=1.0,
-                        help='Extra weight for glass region loss (1.0=no extra weight, 論文未使用此功能)')
+    parser.add_argument('--glass_weight', type=float, default=3.0,
+                        help='Extra weight for glass region loss (實驗 #11 最佳值)')
     parser.add_argument('--max_disp', type=float, default=576.0)
     parser.add_argument('--d1_weight', type=float, default=0.1,
                         help='Weight for D1 in composite score (composite = glass_epe + d1_weight * d1_error)')

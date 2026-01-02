@@ -37,6 +37,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import time
+import hashlib
 
 # 延遲 import mitsuba，避免主進程初始化 CUDA
 mi = None
@@ -50,6 +51,11 @@ def lazy_import_mitsuba():
         import drjit as _dr
         mi = _mi
         dr = _dr
+
+
+def deterministic_hash(s: str) -> int:
+    """確定性 hash，跨 Python 會話一致"""
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) % (2**32)
 
 
 # ============================================================
@@ -1004,6 +1010,62 @@ class PIDSRendererNopol:
 
 
 # ============================================================
+# 參數載入工具
+# ============================================================
+
+def load_camera_params_from_json(params_dir: str, scene_name: str) -> bool:
+    """
+    從偏振版的 params.json 載入相機參數
+
+    Args:
+        params_dir: 偏振版輸出目錄（包含 *_params.json）
+        scene_name: 場景名稱（不含副檔名）
+
+    Returns:
+        True 如果成功載入，False 如果找不到檔案
+    """
+    params_path = Path(params_dir) / f"{scene_name}_params.json"
+
+    if not params_path.exists():
+        print(f"  [警告] 找不到參數檔案: {params_path}")
+        return False
+
+    try:
+        with open(params_path, 'r') as f:
+            params = json.load(f)
+
+        # 從 JSON 提取相機位置
+        camera = params.get('camera', {})
+        left_pos = camera.get('left_position')
+        right_pos = camera.get('right_position')
+
+        if left_pos and right_pos:
+            # 計算 CAMERA_X（左右相機中心）
+            Config.CAMERA_X = (left_pos[0] + right_pos[0]) / 2
+            # Y 和 Z 從左相機取得（假設左右相機同高度）
+            Config.CAMERA_Y = left_pos[1]
+            Config.CAMERA_Z = left_pos[2]
+
+            # 載入光源強度（用於精確匹配偏振版）
+            lighting = params.get('lighting', {})
+            if 'led_intensity' in lighting:
+                Config.LED_INTENSITY = lighting['led_intensity']
+            if 'ceiling_emitter_intensity' in lighting:
+                Config.CEILING_EMITTER_INTENSITY = lighting['ceiling_emitter_intensity']
+
+            print(f"  [Params] 相機: X={Config.CAMERA_X:.1f}, Y={Config.CAMERA_Y:.1f}, Z={Config.CAMERA_Z:.1f}")
+            print(f"  [Params] 燈光: LED={Config.LED_INTENSITY:.0f}, Ceiling={Config.CEILING_EMITTER_INTENSITY:.0f}")
+            return True
+        else:
+            print(f"  [警告] params.json 缺少 camera 資訊")
+            return False
+
+    except Exception as e:
+        print(f"  [錯誤] 讀取 params.json 失敗: {e}")
+        return False
+
+
+# ============================================================
 # 命令行介面
 # ============================================================
 
@@ -1016,8 +1078,11 @@ def main():
   # 單一場景
   python pids_renderer_textured_nopol.py --scene scene_0001.obj --output ./output_nopol
 
-  # 批次渲染
+  # 批次渲染（隨機化，與偏振版使用相同 seed）
   python pids_renderer_textured_nopol.py --input_dir ./scenes --output ./output_nopol --max_scenes 100
+
+  # 多 GPU 並行
+  python pids_renderer_textured_nopol.py --input_dir ./scenes --output ./output_nopol --num_gpus 4
         """
     )
 
@@ -1026,10 +1091,13 @@ def main():
     input_group.add_argument('--input_dir', type=str, help='OBJ 場景目錄')
 
     parser.add_argument('--output', type=str, required=True, help='輸出目錄')
+    parser.add_argument('--params_dir', type=str, default=None,
+                        help='偏振版 params.json 目錄（用於精確匹配相機位置，通常不需要）')
     parser.add_argument('--spp', type=int, default=Config.SPP, help=f'SPP (預設: {Config.SPP})')
     parser.add_argument('--max_scenes', type=int, default=None, help='最大場景數')
     parser.add_argument('--skip', type=int, default=0, help='跳過前 N 個場景')
     parser.add_argument('--no_preview', action='store_true', help='不保存預覽 PNG')
+    parser.add_argument('--num_gpus', type=int, default=1, help='使用的 GPU 數量（預設: 1）')
 
     args = parser.parse_args()
 
@@ -1038,7 +1106,31 @@ def main():
 
     if args.scene:
         scenes = [Path(args.scene)]
+    elif args.params_dir:
+        # 以 params.json 為主導：只渲染有 params.json 的場景
+        params_dir = Path(args.params_dir)
+        params_files = sorted(params_dir.glob('*_params.json'))
+
+        scenes = []
+        missing_obj = []
+        for pf in params_files:
+            # 從 scene_0001_params.json 提取 scene_0001
+            scene_name = pf.stem.replace('_params', '')
+            obj_path = Path(args.input_dir) / f"{scene_name}.obj"
+            if obj_path.exists():
+                scenes.append(obj_path)
+            else:
+                missing_obj.append(scene_name)
+
+        if missing_obj:
+            print(f"[警告] {len(missing_obj)} 個 params.json 找不到對應 OBJ")
+
+        if args.skip > 0:
+            scenes = scenes[args.skip:]
+        if args.max_scenes:
+            scenes = scenes[:args.max_scenes]
     else:
+        # 無 params_dir：掃描所有 OBJ
         all_objs = sorted(Path(args.input_dir).glob('*.obj'))
         scenes = [f for f in all_objs
                   if not any(x in f.stem for x in ['_glass', '_ceiling', '_other'])]
@@ -1049,25 +1141,98 @@ def main():
 
     print(f"[PIDS Renderer v4.0.0-nopol]")
     print(f"  模式: 無偏振 (baseline)")
+    print(f"  GPU 數量: {args.num_gpus}")
+    if args.params_dir:
+        print(f"  相機參數來源: {args.params_dir} (以 params.json 為主導)")
+    else:
+        print(f"  相機參數來源: deterministic_hash(scene_name)")
     print(f"  待渲染: {len(scenes)} 個場景")
 
     start_time = time.time()
 
-    renderer = PIDSRendererNopol()
+    if args.num_gpus > 1:
+        # 多 GPU 並行模式 - 使用 subprocess 確保環境變量正確
+        import subprocess
 
-    for i, scene_path in enumerate(scenes):
-        print(f"\n進度 {i+1}/{len(scenes)}")
-        Config.randomize_for_augmentation(seed=hash(scene_path.stem) % 2**32)
-        try:
-            renderer.render_scene(str(scene_path), args.output)
-        except Exception as e:
-            print(f"錯誤 {scene_path}: {e}")
-            import traceback
-            traceback.print_exc()
+        # 均勻分配場景到各 GPU
+        total_scenes = len(scenes)
+        base_count = total_scenes // args.num_gpus
+        remainder = total_scenes % args.num_gpus
+
+        print(f"\n場景分配 (總計 {total_scenes} 個，均勻分配):")
+        processes = []
+
+        current_idx = 0
+        for gpu_id in range(args.num_gpus):
+            # 前 remainder 個 GPU 各多分 1 個場景
+            num_scenes = base_count + (1 if gpu_id < remainder else 0)
+            start_idx = current_idx
+
+            print(f"  GPU {gpu_id}: {num_scenes} 個場景 (skip={args.skip + start_idx})")
+            current_idx += num_scenes
+
+            # 構建子進程命令
+            cmd = [
+                'python', __file__,
+                '--input_dir', args.input_dir,
+                '--output', args.output,
+                '--spp', str(args.spp),
+                '--skip', str(args.skip + start_idx),
+                '--max_scenes', str(num_scenes),
+            ]
+            if args.no_preview:
+                cmd.append('--no_preview')
+            if args.params_dir:
+                cmd.extend(['--params_dir', args.params_dir])
+
+            # 設置環境變量並啟動子進程
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
+            log_file = open(f'gpu{gpu_id}_nopol.log', 'w')
+            p = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+            processes.append((p, log_file))
+            print(f"[啟動] GPU {gpu_id} 進程 PID: {p.pid}")
+
+        # 等待所有進程完成
+        print(f"\n等待所有 GPU 完成...")
+        for p, log_file in processes:
+            p.wait()
+            log_file.close()
+
+        print(f"所有 GPU 渲染完成！")
+
+    else:
+        # 單 GPU 模式
+        renderer = PIDSRendererNopol()
+        skipped = 0
+
+        for i, scene_path in enumerate(scenes):
+            print(f"\n進度 {i+1}/{len(scenes)}")
+
+            # 決定相機參數來源
+            if args.params_dir:
+                # 從偏振版 JSON 載入精確參數
+                if not load_camera_params_from_json(args.params_dir, scene_path.stem):
+                    print(f"  跳過 {scene_path.stem}（無對應 params.json）")
+                    skipped += 1
+                    continue
+            else:
+                # 使用隨機化（與偏振版相同 seed）
+                Config.randomize_for_augmentation(seed=deterministic_hash(scene_path.name))
+
+            try:
+                renderer.render_scene(str(scene_path), args.output)
+            except Exception as e:
+                print(f"錯誤 {scene_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+        if skipped > 0:
+            print(f"\n跳過 {skipped} 個場景（無對應 params.json）")
 
     elapsed = time.time() - start_time
     print(f"\n總耗時: {elapsed/60:.1f} 分鐘")
-    print(f"平均每場景: {elapsed/len(scenes):.1f} 秒")
 
 
 if __name__ == '__main__':

@@ -72,6 +72,7 @@ import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import time
+import hashlib
 
 # 延遲 import mitsuba，避免主進程初始化 CUDA
 mi = None
@@ -85,6 +86,11 @@ def lazy_import_mitsuba():
         import drjit as _dr
         mi = _mi
         dr = _dr
+
+
+def deterministic_hash(s: str) -> int:
+    """確定性 hash，跨 Python 會話一致"""
+    return int(hashlib.md5(s.encode()).hexdigest(), 16) % (2**32)
 
 
 # ============================================================
@@ -1820,6 +1826,10 @@ class PIDSRenderer:
                 'right_position': list(Config.right_camera_position()),
                 'target': list(Config.target_point()),
             },
+            'lighting': {
+                'led_intensity': Config.LED_INTENSITY,
+                'ceiling_emitter_intensity': Config.CEILING_EMITTER_INTENSITY,
+            },
             'stats': {
                 'I_parallel_range': [float(I_parallel.min()), float(I_parallel.max())],
                 'I_cross_range': [float(I_cross.min()), float(I_cross.max())],
@@ -1917,7 +1927,7 @@ def run_single_gpu_wrapper(args_tuple):
 
     for i, scene_path in enumerate(scenes):
         print(f"[GPU {gpu_id}] 進度 {i+1}/{len(scenes)}: {scene_path.name}")
-        Config.randomize_for_augmentation(seed=hash(scene_path.name) % 2**32)
+        Config.randomize_for_augmentation(seed=deterministic_hash(scene_path.name))
         try:
             renderer.render_scene(str(scene_path), output_dir)
         except Exception as e:
@@ -2039,7 +2049,7 @@ def main():
         renderer = PIDSRenderer()
         for i, scene_path in enumerate(scenes):
             print(f"\n[進度] {i+1}/{len(scenes)}")
-            Config.randomize_for_augmentation(seed=hash(scene_path.name) % 2**32)
+            Config.randomize_for_augmentation(seed=deterministic_hash(scene_path.name))
             try:
                 renderer.render_scene(str(scene_path), args.output)
             except Exception as e:

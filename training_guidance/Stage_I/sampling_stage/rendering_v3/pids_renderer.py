@@ -62,6 +62,9 @@ Chamber 配置 (Blender/OBJ 座標，單位 mm):
 作者: PIDS Project
 版本: 3.2.0
 日期: 2025-12-22
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 from __future__ import annotations

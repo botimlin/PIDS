@@ -33,6 +33,9 @@ PIDS Stage 1 Renderer v3.4.2-nopol (No Polarization)
 版本: 3.4.2-nopol
 日期: 2025-12-23
 基於: pids_renderer.py v3.4.2
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 from __future__ import annotations

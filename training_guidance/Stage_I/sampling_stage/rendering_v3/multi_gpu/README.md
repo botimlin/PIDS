@@ -1,5 +1,8 @@
 # PIDS Multi-GPU Renderer
 
+> Copyright (c) 2025-2026 Po-Ting Lin
+> Released under the MIT License (see LICENSE file).
+
 多 GPU 並行渲染 PIDS 訓練數據。
 
 ## 文件說明

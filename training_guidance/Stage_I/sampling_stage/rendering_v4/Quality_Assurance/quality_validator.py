@@ -15,9 +15,6 @@ PIDS Quality Validator v1.4.2
 使用方式:
     python quality_validator.py --input_dir ./output --output report.md
     python quality_validator.py --input_dir ./output --output report.md --skip-c1  # 模擬場景
-
-Copyright (c) 2025-2026 Po-Ting Lin
-Released under the MIT License (see LICENSE file).
 """
 
 import os
@@ -916,6 +913,8 @@ def main():
                         help='跳過 EXR 讀取（不計算 vertical disparity）')
     parser.add_argument('--skip-c1', action='store_true',
                         help='跳過 C1 (Geometric Consistency) 檢查 - 適用於模擬場景（相機位置已精確定義）')
+    parser.add_argument('--failed', type=str, default='failed.txt',
+                        help='輸出未通過場景列表 (預設: failed.txt)')
 
     args = parser.parse_args()
 
@@ -954,6 +953,17 @@ def main():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False, default=str)
         print(f"[輸出] JSON 報告: {json_path}")
+
+    # 輸出未通過場景列表
+    failed_scenes = [item['scene_name'] for item in results['results'] if not item['passed']]
+    if failed_scenes:
+        failed_path = Path(args.failed)
+        with open(failed_path, 'w', encoding='utf-8') as f:
+            for scene in failed_scenes:
+                f.write(f"{scene}\n")
+        print(f"[輸出] 未通過場景列表: {failed_path} ({len(failed_scenes)} 個)")
+    else:
+        print(f"[輸出] 所有場景皆通過，未生成 {args.failed}")
 
     # 印出摘要
     print(f"\n{'='*50}")

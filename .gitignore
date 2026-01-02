@@ -7109,3 +7109,11 @@ training_guidance/Stage_I/sampling_stage/modelling_textured/scenes_textured/wood
 training_guidance/Stage_I/sampling_stage/modelling_textured/scenes_textured/wood_shutter_diff_4k.jpg
 training_guidance/Stage_I/sampling_stage/modelling_textured/scenes_textured/wood_table_worn_diff_4k.jpg
 training_guidance/Stage_I/sampling_stage/modelling_textured/scenes_textured/worn_mossy_plasterwall_diff_4k.jpg
+
+# V4 large folders
+training_guidance/Stage_I/sampling_stage/rendering_v4/output_pol/
+training_guidance/Stage_I/sampling_stage/rendering_v4/passed_params/
+training_guidance/Stage_I/sampling_stage/rendering_v4/ouput_textures/
+training_guidance/Stage_I/sampling_stage/modelling_textured/
+training_guidance/Stage_I/training_stage/dataset_V3/
+training_guidance/Stage_I/training_stage/dataset_pol_V4/

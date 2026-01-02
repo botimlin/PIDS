@@ -1,23 +1,32 @@
 """
 PIDS 數據集整理腳本（精簡版）
-只保留訓練必要的 EXR 檔案
+只保留訓練必要的 EXR 檔案，支援訓練/測試分割
 
 輸出結構:
     dataset/
-    ├── stereo_pairs/     # left_parallel.exr, right_cross.exr
-    ├── ground_truth/     # disparity.exr
-    └── masks/            # glass_mask.exr
+    ├── train/
+    │   ├── stereo_pairs/     # left_parallel.exr, right_cross.exr
+    │   ├── ground_truth/     # disparity.exr
+    │   └── masks/            # glass_mask.exr
+    └── test/
+        ├── stereo_pairs/
+        ├── ground_truth/
+        └── masks/
 
 Usage:
-    python organize_dataset.py --input_dir ./output --output_dir ./dataset
+    python organize_dataset.py --input_dir ./output --output_dir ./dataset --train_size 3500
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import os
 import re
+import random
 import shutil
 import argparse
 from pathlib import Path
-from typing import Set
+from typing import Set, List
 from collections import defaultdict
 
 
@@ -94,14 +103,30 @@ def find_quality_report(input_dir: Path, report_path: Path = None) -> Path:
     return None
 
 
+def collect_valid_scenes(input_dir: Path, failed_scenes: Set[str]) -> List[str]:
+    """收集所有合格場景名稱"""
+    scenes = set()
+    for filepath in input_dir.iterdir():
+        if not filepath.is_file():
+            continue
+        scene_name = get_scene_name(filepath.name)
+        if scene_name and scene_name not in failed_scenes:
+            _, keep = is_training_file(filepath.name)
+            if keep:
+                scenes.add(scene_name)
+    return sorted(scenes)
+
+
 def organize_dataset(
     input_dir: Path,
     output_dir: Path,
     report_path: Path = None,
     dry_run: bool = False,
     copy_mode: bool = False,
+    train_size: int = None,
+    seed: int = 42,
 ):
-    """整理數據集，只保留訓練必要檔案"""
+    """整理數據集，只保留訓練必要檔案，支援訓練/測試分割"""
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
 
@@ -120,19 +145,55 @@ def organize_dataset(
         print("  Use --report to specify path")
         failed_scenes = set()
 
-    # 創建輸出目錄 (與 pids_dataset.py 一致)
-    subdirs = {
-        'stereo_pairs': output_dir / 'stereo_pairs',
-        'disparity': output_dir / 'ground_truth',  # pids_dataset.py 期望 ground_truth/
-        'masks': output_dir / 'masks',
-    }
+    # 收集所有合格場景
+    all_scenes = collect_valid_scenes(input_dir, failed_scenes)
+    total_scenes = len(all_scenes)
+    print(f"Total valid scenes: {total_scenes}")
+
+    # 分割訓練/測試集
+    if train_size and train_size < total_scenes:
+        random.seed(seed)
+        random.shuffle(all_scenes)
+        train_scenes = set(all_scenes[:train_size])
+        test_scenes = set(all_scenes[train_size:])
+        print(f"Train/Test split: {len(train_scenes)} / {len(test_scenes)} (seed={seed})")
+    else:
+        train_scenes = set(all_scenes)
+        test_scenes = set()
+        if train_size:
+            print(f"Warning: train_size ({train_size}) >= total scenes ({total_scenes}), no test split")
+
+    # 創建輸出目錄結構
+    if test_scenes:
+        # 有分割時使用 train/ 和 test/ 子目錄
+        train_subdirs = {
+            'stereo_pairs': output_dir / 'train' / 'stereo_pairs',
+            'disparity': output_dir / 'train' / 'ground_truth',
+            'masks': output_dir / 'train' / 'masks',
+        }
+        test_subdirs = {
+            'stereo_pairs': output_dir / 'test' / 'stereo_pairs',
+            'disparity': output_dir / 'test' / 'ground_truth',
+            'masks': output_dir / 'test' / 'masks',
+        }
+    else:
+        # 無分割時直接使用根目錄
+        train_subdirs = {
+            'stereo_pairs': output_dir / 'stereo_pairs',
+            'disparity': output_dir / 'ground_truth',
+            'masks': output_dir / 'masks',
+        }
+        test_subdirs = {}
 
     if not dry_run:
-        for subdir in subdirs.values():
+        for subdir in train_subdirs.values():
+            subdir.mkdir(parents=True, exist_ok=True)
+        for subdir in test_subdirs.values():
             subdir.mkdir(parents=True, exist_ok=True)
 
     # 統計
-    stats = defaultdict(int)
+    train_stats = defaultdict(int)
+    test_stats = defaultdict(int)
     skipped = 0
     failed_count = 0
 
@@ -142,6 +203,8 @@ def organize_dataset(
     print(f"Input:  {input_dir}")
     print(f"Output: {output_dir}")
     print(f"Mode:   {'Copy' if copy_mode else 'Move'}")
+    if train_size:
+        print(f"Train size: {train_size}")
     print(f"{'=' * 60}\n")
 
     # 處理每個檔案
@@ -165,11 +228,22 @@ def organize_dataset(
                 print(f"  [SKIP FAILED] {filename}")
             continue
 
-        target_dir = subdirs[category]
+        # 決定是訓練還是測試
+        if scene_name in train_scenes:
+            target_dir = train_subdirs[category]
+            stats = train_stats
+            split_label = "train"
+        elif scene_name in test_scenes:
+            target_dir = test_subdirs[category]
+            stats = test_stats
+            split_label = "test"
+        else:
+            continue
+
         target_path = target_dir / filename
 
         if dry_run:
-            print(f"  {category}: {filename}")
+            print(f"  [{split_label}] {category}: {filename}")
         else:
             if copy_mode:
                 shutil.copy2(filepath, target_path)
@@ -183,55 +257,95 @@ def organize_dataset(
     print("Summary")
     print(f"{'=' * 60}")
 
-    total = sum(stats.values())
-    scenes = stats['stereo_pairs'] // 2  # 每個場景有 2 個 stereo 檔案
+    train_total = sum(train_stats.values())
+    train_scene_count = train_stats['stereo_pairs'] // 2
 
-    print(f"\nKept (training files):")
+    print(f"\nTrain set ({train_scene_count} scenes, {train_total} files):")
     for category in ['stereo_pairs', 'disparity', 'masks']:
-        count = stats[category]
+        count = train_stats[category]
         folder = 'ground_truth' if category == 'disparity' else category
         if count > 0:
             print(f"  {folder:15s}: {count:4d} files")
 
+    if test_scenes:
+        test_total = sum(test_stats.values())
+        test_scene_count = test_stats['stereo_pairs'] // 2
+        print(f"\nTest set ({test_scene_count} scenes, {test_total} files):")
+        for category in ['stereo_pairs', 'disparity', 'masks']:
+            count = test_stats[category]
+            folder = 'ground_truth' if category == 'disparity' else category
+            if count > 0:
+                print(f"  {folder:15s}: {count:4d} files")
+
     print(f"\nSkipped:")
     print(f"  Non-training files: {skipped}")
     print(f"  Failed scenes:      {failed_count}")
-
-    print(f"\nTotal: {total} files ({scenes} scenes)")
 
     # 複製 quality_report.md 到輸出目錄
     if report_path and report_path.exists() and not dry_run:
         shutil.copy2(report_path, output_dir / 'quality_report.md')
         print(f"\nCopied quality_report.md to output")
 
+    # 輸出場景列表（方便追溯）
+    if not dry_run and test_scenes:
+        with open(output_dir / 'train_scenes.txt', 'w') as f:
+            for scene in sorted(train_scenes):
+                f.write(f"{scene}\n")
+        with open(output_dir / 'test_scenes.txt', 'w') as f:
+            for scene in sorted(test_scenes):
+                f.write(f"{scene}\n")
+        print(f"Saved train_scenes.txt and test_scenes.txt")
+
     if not dry_run:
         print(f"\nOutput structure:")
-        for name, path in subdirs.items():
-            if path.exists():
-                count = len(list(path.glob('*.exr')))
-                print(f"  {path.name}/  ({count} EXR files)")
+        if test_scenes:
+            print(f"  train/")
+            for name, path in train_subdirs.items():
+                if path.exists():
+                    count = len(list(path.glob('*.exr')))
+                    print(f"    {path.name}/  ({count} EXR files)")
+            print(f"  test/")
+            for name, path in test_subdirs.items():
+                if path.exists():
+                    count = len(list(path.glob('*.exr')))
+                    print(f"    {path.name}/  ({count} EXR files)")
+        else:
+            for name, path in train_subdirs.items():
+                if path.exists():
+                    count = len(list(path.glob('*.exr')))
+                    print(f"  {path.name}/  ({count} EXR files)")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='PIDS 數據集整理（只保留訓練必要 EXR）',
+        description='PIDS 數據集整理（只保留訓練必要 EXR），支援訓練/測試分割',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # 預覽
   python organize_dataset.py --input_dir ./output --dry_run
 
-  # 整理（移動檔案）
+  # 整理（全部作為訓練集）
   python organize_dataset.py --input_dir ./output --output_dir ./dataset
 
-  # 整理（複製檔案）
-  python organize_dataset.py --input_dir ./output --output_dir ./dataset --copy
+  # 整理並分割（3500訓練，剩餘測試）
+  python organize_dataset.py --input_dir ./output --output_dir ./dataset --train_size 3500
 
-Output structure:
+  # 複製模式（保留原始檔案）
+  python organize_dataset.py --input_dir ./output --output_dir ./dataset --train_size 3500 --copy
+
+Output structure (with split):
   dataset/
-  ├── stereo_pairs/     # *_left_parallel.exr, *_right_cross.exr
-  ├── ground_truth/     # *_disparity.exr
-  └── masks/            # *_glass_mask.exr
+  ├── train/
+  │   ├── stereo_pairs/     # *_left_parallel.exr, *_right_cross.exr
+  │   ├── ground_truth/     # *_disparity.exr
+  │   └── masks/            # *_glass_mask.exr
+  ├── test/
+  │   ├── stereo_pairs/
+  │   ├── ground_truth/
+  │   └── masks/
+  ├── train_scenes.txt      # 訓練場景列表
+  └── test_scenes.txt       # 測試場景列表
         """
     )
 
@@ -241,6 +355,10 @@ Output structure:
                         help='輸出目錄')
     parser.add_argument('--report', type=str, default=None,
                         help='quality_report.md 路徑')
+    parser.add_argument('--train_size', type=int, default=None,
+                        help='訓練集場景數量（剩餘作為測試集）')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='隨機種子（預設: 42）')
     parser.add_argument('--dry_run', action='store_true',
                         help='預覽模式')
     parser.add_argument('--copy', action='store_true',
@@ -256,6 +374,8 @@ Output structure:
         report_path=report_path,
         dry_run=args.dry_run,
         copy_mode=args.copy,
+        train_size=args.train_size,
+        seed=args.seed,
     )
 
     if args.dry_run:

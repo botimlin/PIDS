@@ -5,9 +5,6 @@ PIDS 場景報告匯總腳本
 Usage:
     python aggregate_reports.py --input_dir ./output/output --output summary_report.md
     python aggregate_reports.py --input_dir ./output/output --output summary_report.md --sort score
-
-Copyright (c) 2025-2026 Po-Ting Lin
-Released under the MIT License (see LICENSE file).
 """
 
 import os
@@ -21,7 +18,7 @@ import re
 
 def load_reports(input_dir: Path) -> List[Dict]:
     """
-    載入所有場景報告
+    載入所有場景報告，並合併 params.json 的數據
 
     自動過濾:
     - *_glass_report.json (OBJ 分離中間產物)
@@ -43,7 +40,18 @@ def load_reports(input_dir: Path) -> List[Dict]:
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 data['_file_path'] = str(json_file)
-                reports.append(data)
+
+            # 嘗試載入對應的 params.json
+            scene_name = data.get('scene_name', '')
+            params_file = input_dir / f"{scene_name}_params.json"
+            if params_file.exists():
+                with open(params_file, 'r', encoding='utf-8') as f:
+                    params = json.load(f)
+                    data['_params'] = params
+            else:
+                data['_params'] = {}
+
+            reports.append(data)
         except Exception as e:
             print(f"警告: 無法讀取 {json_file}: {e}")
 
@@ -130,6 +138,35 @@ def generate_statistics(reports: List[Dict]) -> str:
     validity_rates = [r.get('glass_depth_validity', {}).get('validity_rate', 0) for r in reports]
     snrs = [r.get('noise', {}).get('snr_polarization', 0) for r in reports]
 
+    # 從 params.json 收集亮度和光照數據
+    max_intensities = []
+    led_intensities = []
+    ceiling_intensities = []
+    camera_xs = []
+
+    for r in reports:
+        params = r.get('_params', {})
+        stats = params.get('stats', {})
+        lighting = params.get('lighting', {})
+        camera = params.get('camera', {})
+
+        # 亮度 (取 I_parallel 和 I_cross 的 max 中較大者)
+        i_par = stats.get('I_parallel_range', [0, 0])
+        i_cross = stats.get('I_cross_range', [0, 0])
+        max_par = i_par[1] if len(i_par) > 1 else 0
+        max_cross = i_cross[1] if len(i_cross) > 1 else 0
+        max_intensities.append(max(max_par, max_cross))
+
+        # 光照參數
+        if 'led_intensity' in lighting:
+            led_intensities.append(lighting['led_intensity'])
+        if 'ceiling_emitter_intensity' in lighting:
+            ceiling_intensities.append(lighting['ceiling_emitter_intensity'])
+
+        # 相機位置
+        if 'x' in camera:
+            camera_xs.append(camera['x'])
+
     # 品質等級分佈
     levels = [r.get('quality', {}).get('level', 'unknown') for r in reports]
     level_counts = {
@@ -170,6 +207,15 @@ def generate_statistics(reports: List[Dict]) -> str:
         f"| 背景區域 DoLP | {to_percent(avg(bg_dolps))} | {to_percent(min_val(bg_dolps))} | {to_percent(max_val(bg_dolps))} |",
         f"| 玻璃深度有效率 | {to_percent(avg(validity_rates))} | {to_percent(min_val(validity_rates))} | {to_percent(max_val(validity_rates))} |",
         f"| SNR | {avg(snrs):.2f} | {min_val(snrs):.2f} | {max_val(snrs):.2f} |",
+    ]
+
+    # 加入亮度統計 (如果有數據)
+    if max_intensities:
+        lines.extend([
+            f"| Max Intensity | {avg(max_intensities):.2f} | {min_val(max_intensities):.2f} | {max_val(max_intensities):.2f} |",
+        ])
+
+    lines.extend([
         "",
         "### 通過率",
         "",
@@ -177,7 +223,23 @@ def generate_statistics(reports: List[Dict]) -> str:
         f"|----------|--------|--------|",
         f"| 深度有效率 (>90%) | {validity_pass}/{n} | {to_percent(validity_pass/n)} |",
         f"| 背景平衡 (0.5~2.0x) | {balance_pass}/{n} | {to_percent(balance_pass/n)} |",
-    ]
+    ])
+
+    # 加入光照參數統計 (如果有數據)
+    if led_intensities or ceiling_intensities or camera_xs:
+        lines.extend([
+            "",
+            "### 渲染參數統計 (from params.json)",
+            "",
+            "| 參數 | 平均 | 最小 | 最大 |",
+            "|------|------|------|------|",
+        ])
+        if led_intensities:
+            lines.append(f"| LED Intensity | {avg(led_intensities):.1f} | {min_val(led_intensities):.1f} | {max_val(led_intensities):.1f} |")
+        if ceiling_intensities:
+            lines.append(f"| Ceiling Intensity | {avg(ceiling_intensities):.1f} | {min_val(ceiling_intensities):.1f} | {max_val(ceiling_intensities):.1f} |")
+        if camera_xs:
+            lines.append(f"| Camera X (mm) | {avg(camera_xs):.1f} | {min_val(camera_xs):.1f} | {max_val(camera_xs):.1f} |")
 
     return "\n".join(lines)
 

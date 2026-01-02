@@ -7,6 +7,9 @@ Usage:
                        --left image_left.exr \
                        --right image_right.exr \
                        --output disparity.png
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import argparse
