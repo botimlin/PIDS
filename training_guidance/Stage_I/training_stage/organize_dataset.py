@@ -72,7 +72,11 @@ def is_training_file(filename: str) -> tuple:
     """
     # 只保留這些 EXR 檔案
     if filename.endswith('.exr'):
+        # pol: _left_parallel.exr, _right_cross.exr
+        # nopol: _left.exr, _right.exr
         if '_left_parallel.exr' in filename or '_right_cross.exr' in filename:
+            return ('stereo_pairs', True)
+        if filename.endswith('_left.exr') or filename.endswith('_right.exr'):
             return ('stereo_pairs', True)
         if '_disparity.exr' in filename:
             return ('disparity', True)

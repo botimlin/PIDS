@@ -29,7 +29,7 @@ def main():
     print(f"找到 {len(scene_names)} 个场景")
 
     # 检查每个场景的文件完整性
-    required_suffixes = ['_left.exr', '_right.exr', '_disparity.exr', '_depth.exr', '_mask.png']
+    required_suffixes = ['_left.exr', '_right.exr', '_disparity.exr', '_depth.exr', '_glass_mask.exr']
 
     complete = 0
     incomplete = []
