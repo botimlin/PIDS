@@ -25,6 +25,9 @@ Training Data Quality Check Script
 
 作者: PIDS Project
 版本: 1.0
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import os

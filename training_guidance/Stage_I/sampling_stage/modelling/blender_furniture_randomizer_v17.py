@@ -50,6 +50,9 @@ Chamber 結構 (俯視圖):
 1. 在 Blender 中準備 source_* 傢俱物件
 2. 執行此腳本
 3. OBJ 檔案輸出到指定目錄
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
 """
 
 import bpy

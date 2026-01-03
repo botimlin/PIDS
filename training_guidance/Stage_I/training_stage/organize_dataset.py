@@ -129,6 +129,7 @@ def organize_dataset(
     copy_mode: bool = False,
     train_size: int = None,
     seed: int = 42,
+    scene_list_dir: Path = None,
 ):
     """整理數據集，只保留訓練必要檔案，支援訓練/測試分割"""
     input_dir = Path(input_dir)
@@ -149,23 +150,61 @@ def organize_dataset(
         print("  Use --report to specify path")
         failed_scenes = set()
 
-    # 收集所有合格場景
-    all_scenes = collect_valid_scenes(input_dir, failed_scenes)
-    total_scenes = len(all_scenes)
-    print(f"Total valid scenes: {total_scenes}")
+    # 使用指定的場景列表（用於對齊不同數據集）
+    if scene_list_dir:
+        scene_list_dir = Path(scene_list_dir)
+        train_list_file = scene_list_dir / 'train_scenes.txt'
+        test_list_file = scene_list_dir / 'test_scenes.txt'
 
-    # 分割訓練/測試集
-    if train_size and train_size < total_scenes:
-        random.seed(seed)
-        random.shuffle(all_scenes)
-        train_scenes = set(all_scenes[:train_size])
-        test_scenes = set(all_scenes[train_size:])
-        print(f"Train/Test split: {len(train_scenes)} / {len(test_scenes)} (seed={seed})")
+        if not train_list_file.exists():
+            print(f"Error: train_scenes.txt not found in {scene_list_dir}")
+            return
+
+        train_scenes = set(train_list_file.read_text().strip().split('\n'))
+        test_scenes = set(test_list_file.read_text().strip().split('\n')) if test_list_file.exists() else set()
+
+        print(f"Using scene list from: {scene_list_dir}")
+        print(f"  Train scenes: {len(train_scenes)}")
+        print(f"  Test scenes: {len(test_scenes)}")
+
+        # 檢查輸入目錄中有多少場景可用
+        available_scenes = set()
+        for filepath in input_dir.iterdir():
+            if filepath.is_file():
+                scene_name = get_scene_name(filepath.name)
+                if scene_name:
+                    available_scenes.add(scene_name)
+
+        train_available = train_scenes & available_scenes
+        test_available = test_scenes & available_scenes
+
+        if len(train_available) < len(train_scenes):
+            missing = len(train_scenes) - len(train_available)
+            print(f"  Warning: {missing} train scenes not found in input")
+        if len(test_available) < len(test_scenes):
+            missing = len(test_scenes) - len(test_available)
+            print(f"  Warning: {missing} test scenes not found in input")
+
+        train_scenes = train_available
+        test_scenes = test_available
     else:
-        train_scenes = set(all_scenes)
-        test_scenes = set()
-        if train_size:
-            print(f"Warning: train_size ({train_size}) >= total scenes ({total_scenes}), no test split")
+        # 收集所有合格場景
+        all_scenes = collect_valid_scenes(input_dir, failed_scenes)
+        total_scenes = len(all_scenes)
+        print(f"Total valid scenes: {total_scenes}")
+
+        # 分割訓練/測試集
+        if train_size and train_size < total_scenes:
+            random.seed(seed)
+            random.shuffle(all_scenes)
+            train_scenes = set(all_scenes[:train_size])
+            test_scenes = set(all_scenes[train_size:])
+            print(f"Train/Test split: {len(train_scenes)} / {len(test_scenes)} (seed={seed})")
+        else:
+            train_scenes = set(all_scenes)
+            test_scenes = set()
+            if train_size:
+                print(f"Warning: train_size ({train_size}) >= total scenes ({total_scenes}), no test split")
 
     # 創建輸出目錄結構
     if test_scenes:
@@ -367,10 +406,14 @@ Output structure (with split):
                         help='預覽模式')
     parser.add_argument('--copy', action='store_true',
                         help='複製而非移動')
+    parser.add_argument('--scene_list', type=str, default=None,
+                        help='場景列表目錄（包含 train_scenes.txt 和 test_scenes.txt，用於對齊不同數據集）')
 
     args = parser.parse_args()
 
     report_path = Path(args.report) if args.report else None
+
+    scene_list_dir = Path(args.scene_list) if args.scene_list else None
 
     organize_dataset(
         input_dir=Path(args.input_dir),
@@ -380,6 +423,7 @@ Output structure (with split):
         copy_mode=args.copy,
         train_size=args.train_size,
         seed=args.seed,
+        scene_list_dir=scene_list_dir,
     )
 
     if args.dry_run:

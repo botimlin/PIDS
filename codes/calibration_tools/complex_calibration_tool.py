@@ -1,3 +1,11 @@
+"""
+PIDS Complex Calibration Tool
+相機校準工具，用於 Raspberry Pi 上的偏振相機系統
+
+Copyright (c) 2025-2026 Po-Ting Lin
+Released under the MIT License (see LICENSE file).
+"""
+
 import time
 import threading
 import cv2

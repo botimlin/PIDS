@@ -1050,10 +1050,11 @@ python pids_renderer_textured_nopol.py \
 - [x] 偏振版渲染完成 (16 GPU, ~50秒/場景, ~4hr)
 - [x] QA 篩選完成 (通過: 3765, 未通過: 235, 通過率: 94.1%)
 - [x] 無偏振版渲染完成 (16 GPU, ~5秒/場景, 35min)
-- [x] 整理數據集 (train 3500 / test 265)
-- [ ] 訓練 PIDS (偏振版)
-- [ ] 訓練 Baseline (無偏振版)
-- [ ] 對比評估
+- [x] 整理數據集 pol (train 3500 / test 265)
+- [x] 訓練 PIDS 偏振版 (實驗 #13, Glass EPE 39.20 px)
+- [ ] 整理數據集 nopol (使用 --scene_list 對齊)
+- [ ] 訓練 Baseline 無偏振版 (實驗 #14)
+- [ ] 對比評估 PIDS vs Baseline
 
 ---
 
@@ -1180,6 +1181,68 @@ nohup python train_pids.py \
 
 ---
 
+## 實驗 #14：Baseline 無偏振版訓練
+
+**日期**: 2026-01-03
+**狀態**: 🔜 待開始
+
+### 實驗目標
+
+使用相同的 3500 場景訓練無偏振版本，作為 PIDS 消融實驗的 Baseline。
+
+### 數據準備
+
+使用 `--scene_list` 參數確保與實驗 #13 使用完全相同的場景：
+
+```bash
+python organize_dataset.py \
+    --input_dir ./output_nopol \
+    --output_dir ./dataset_nopol \
+    --scene_list ./dataset_pol_V4 \
+    --copy
+```
+
+### 訓練配置
+
+對齊實驗 #13 參數，唯一差異是輸入數據：
+
+```bash
+nohup python train_pids.py \
+    --data_dir ./dataset_nopol \
+    --output_dir ./checkpoints_nopol_3500 \
+    --pretrained ./models/raftstereo-sceneflow.pth \
+    --glass_weight 3.0 \
+    --lr 0.00005 \
+    --batch_size 8 \
+    --accumulation_steps 1 \
+    --num_steps 50000 \
+    --val_freq 500 \
+    --iters 16 \
+    --scheduler cosine \
+    --d1_weight 0.2 \
+    > train_nopol_3500.log 2>&1 &
+```
+
+### 對齊項目
+
+| 參數 | PIDS (實驗#13) | Baseline (實驗#14) |
+|------|----------------|-------------------|
+| 場景列表 | train_scenes.txt | **相同** |
+| train_size | 3500 | **相同** |
+| test_size | 265 | **相同** |
+| num_steps | 50000 | **相同** |
+| batch_size | 8 | **相同** |
+| lr | 0.00005 | **相同** |
+| 輸入格式 | `_left_parallel.exr` | `_left.exr` |
+
+### 預期結果
+
+如果偏振確實有助於透明物體檢測，預期：
+- Baseline Glass EPE > PIDS Glass EPE
+- Baseline D1 > PIDS D1
+
+---
+
 ### 渲染速度對比
 
 | | Polarized | Non-Polarized | 差異 |
@@ -1257,7 +1320,29 @@ dataset = PIDSSyntheticDataset(data_dir="./dataset_pol", split='train')
 python check_nopol_completeness.py --input_dir ./output_nopol
 ```
 
-檢查 5 個必要文件是否齊全：`_left.exr`, `_right.exr`, `_disparity.exr`, `_depth.exr`, `_mask.png`
+檢查 5 個必要文件是否齊全：`_left.exr`, `_right.exr`, `_disparity.exr`, `_depth.exr`, `_glass_mask.exr`
+
+#### organize_dataset.py 新增 --scene_list 參數
+
+為確保 PIDS vs Baseline 公平對比，新增場景列表對齊功能：
+
+```bash
+# 使用 pol 數據集的場景列表來整理 nopol 數據集
+python organize_dataset.py \
+    --input_dir ./output_nopol \
+    --output_dir ./dataset_nopol \
+    --scene_list ./dataset_pol_V4 \
+    --copy
+```
+
+**功能**：
+- 讀取 `--scene_list` 目錄中的 `train_scenes.txt` 和 `test_scenes.txt`
+- 確保 nopol 使用完全相同的 3500 train + 265 test 場景
+- 避免因 QA 篩選差異導致不公平對比
+
+**支援的檔案命名**：
+- pol: `_left_parallel.exr`, `_right_cross.exr`
+- nopol: `_left.exr`, `_right.exr`
 
 ---
 

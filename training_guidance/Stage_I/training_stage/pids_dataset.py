@@ -152,6 +152,14 @@ class PIDSSyntheticDataset(Dataset):
         print(f"[PIDSDataset] {split} split: {len(self.scenes)} scenes ({train_ratio}/{val_ratio} split)")
         print(f"[PIDSDataset] Directory structure: {self.dir_structure}")
 
+        # 統計命名格式
+        pol_count = sum(1 for s in self.scenes if self.scene_naming.get(s) == 'pol')
+        nopol_count = sum(1 for s in self.scenes if self.scene_naming.get(s) == 'nopol')
+        if pol_count > 0 and nopol_count > 0:
+            print(f"[PIDSDataset] Mixed naming: {pol_count} pol + {nopol_count} nopol")
+        elif nopol_count > 0:
+            print(f"[PIDSDataset] Naming format: nopol (_left.exr, _right.exr)")
+
     def _detect_directory_structure(self):
         """自動偵測目錄結構"""
         # 檢查是否為整理後的結構
@@ -184,8 +192,9 @@ class PIDSSyntheticDataset(Dataset):
     def _scan_scenes(self) -> List[str]:
         """掃描數據目錄中的有效場景"""
         scenes = []
+        self.scene_naming = {}  # 記錄每個場景的命名格式: 'pol' or 'nopol'
 
-        # 查找所有 left_parallel.exr 檔案
+        # 查找 polarized 格式: *_left_parallel.exr
         for f in self.stereo_dir.glob("*_left_parallel.exr"):
             scene_name = f.stem.replace('_left_parallel', '')
 
@@ -208,6 +217,40 @@ class PIDSSyntheticDataset(Dataset):
 
             if all(f.exists() for f in stereo_files + depth_files):
                 scenes.append(scene_name)
+                self.scene_naming[scene_name] = 'pol'
+
+        # 查找 non-polarized 格式: *_left.exr (排除已找到的 pol 場景)
+        for f in self.stereo_dir.glob("*_left.exr"):
+            # 排除 _left_parallel.exr
+            if '_left_parallel' in f.stem:
+                continue
+
+            scene_name = f.stem.replace('_left', '')
+
+            # 跳過 glass/other 子場景
+            if '_glass' in scene_name or '_other' in scene_name:
+                continue
+
+            # 跳過未通過品質檢測的場景
+            if scene_name in self.failed_scenes:
+                continue
+
+            # 跳過已經找到的場景
+            if scene_name in self.scene_naming:
+                continue
+
+            # 確認必要檔案存在
+            stereo_files = [
+                self.stereo_dir / f"{scene_name}_left.exr",
+                self.stereo_dir / f"{scene_name}_right.exr",
+            ]
+            depth_files = [
+                self.depth_dir / f"{scene_name}_disparity.exr",
+            ]
+
+            if all(f.exists() for f in stereo_files + depth_files):
+                scenes.append(scene_name)
+                self.scene_naming[scene_name] = 'nopol'
 
         scenes.sort()
         return scenes
@@ -217,9 +260,14 @@ class PIDSSyntheticDataset(Dataset):
 
     def _load_scene(self, scene_name: str) -> Dict[str, np.ndarray]:
         """載入單一場景的所有數據"""
-        # 載入左右圖像 (從 stereo_dir)
-        left_path = self.stereo_dir / f"{scene_name}_left_parallel.exr"
-        right_path = self.stereo_dir / f"{scene_name}_right_cross.exr"
+        # 根據場景命名格式選擇正確的檔案名
+        naming = self.scene_naming.get(scene_name, 'pol')
+        if naming == 'pol':
+            left_path = self.stereo_dir / f"{scene_name}_left_parallel.exr"
+            right_path = self.stereo_dir / f"{scene_name}_right_cross.exr"
+        else:  # nopol
+            left_path = self.stereo_dir / f"{scene_name}_left.exr"
+            right_path = self.stereo_dir / f"{scene_name}_right.exr"
 
         # 載入視差圖 (從 depth_dir)
         disp_path = self.depth_dir / f"{scene_name}_disparity.exr"

@@ -1,5 +1,8 @@
 # PIDS Mitsuba 3 渲染系統
 
+> Copyright (c) 2025-2026 Po-Ting Lin
+> Released under the MIT License (see LICENSE file).
+
 用於 Physics-Informed Deep Stereo (PIDS) 專案的 Stage I 訓練數據生成。
 
 ## 📁 檔案結構

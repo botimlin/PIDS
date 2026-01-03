@@ -16,6 +16,13 @@ import argparse
 from pathlib import Path
 
 try:
+    import OpenEXR
+    import Imath
+    HAS_OPENEXR = True
+except ImportError:
+    HAS_OPENEXR = False
+
+try:
     import mitsuba as mi
     HAS_MITSUBA = True
 except ImportError:
@@ -33,7 +40,45 @@ def load_exr(path):
     if not os.path.exists(path):
         print(f"[ERROR] 文件不存在: {path}")
         return None
-    
+
+    # 優先使用 OpenEXR 庫
+    if HAS_OPENEXR:
+        try:
+            exr_file = OpenEXR.InputFile(path)
+            header = exr_file.header()
+            dw = header['dataWindow']
+            width = dw.max.x - dw.min.x + 1
+            height = dw.max.y - dw.min.y + 1
+
+            pt = Imath.PixelType(Imath.PixelType.FLOAT)
+            channels = list(header['channels'].keys())
+
+            if len(channels) == 1:
+                # 單通道 (深度/視差)
+                data = exr_file.channel(channels[0], pt)
+                image = np.frombuffer(data, dtype=np.float32).reshape(height, width)
+            else:
+                # 多通道 (RGB)
+                arrays = []
+                for ch in ['R', 'G', 'B']:
+                    if ch in channels:
+                        data = exr_file.channel(ch, pt)
+                        arr = np.frombuffer(data, dtype=np.float32).reshape(height, width)
+                        arrays.append(arr)
+                if arrays:
+                    image = np.stack(arrays, axis=-1)
+                else:
+                    # 使用前三個通道
+                    for ch in channels[:3]:
+                        data = exr_file.channel(ch, pt)
+                        arr = np.frombuffer(data, dtype=np.float32).reshape(height, width)
+                        arrays.append(arr)
+                    image = np.stack(arrays, axis=-1) if len(arrays) > 1 else arrays[0]
+
+            return image
+        except Exception as e:
+            print(f"[WARN] OpenEXR 載入失敗: {e}")
+
     if HAS_MITSUBA:
         try:
             bitmap = mi.Bitmap(path)
@@ -41,7 +86,7 @@ def load_exr(path):
             return image
         except:
             pass
-    
+
     if HAS_CV2:
         try:
             os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
@@ -50,7 +95,7 @@ def load_exr(path):
                 return image.astype(np.float32)
         except:
             pass
-    
+
     print(f"[ERROR] 無法載入: {path}")
     return None
 
@@ -176,8 +221,9 @@ def main():
     
     args = parser.parse_args()
     
-    if not HAS_MITSUBA and not HAS_CV2:
-        print("[ERROR] 需要 mitsuba 或 opencv")
+    if not HAS_OPENEXR and not HAS_MITSUBA and not HAS_CV2:
+        print("[ERROR] 需要 OpenEXR, mitsuba 或 opencv")
+        print("       pip install OpenEXR")
         return 1
     
     if args.dir:
