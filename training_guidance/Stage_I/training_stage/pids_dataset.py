@@ -274,6 +274,7 @@ class PIDSSyntheticDataset(Dataset):
 
         # 載入遮罩 (從 mask_dir)
         mask_path = self.mask_dir / f"{scene_name}_glass_mask.exr"
+        mask_strict_path = self.mask_dir / f"{scene_name}_glass_mask_strict.exr"
 
         left = EXRReader.read_rgb(str(left_path))
         right = EXRReader.read_rgb(str(right_path))
@@ -291,11 +292,19 @@ class PIDSSyntheticDataset(Dataset):
         else:
             mask = np.zeros_like(disparity)
 
+        # 載入嚴格玻璃遮罩（交集，用於評估）
+        if mask_strict_path.exists():
+            mask_strict = EXRReader.read_depth(str(mask_strict_path))
+        else:
+            # 如果沒有 strict mask，使用普通 mask
+            mask_strict = mask.copy()
+
         return {
             'left': left,
             'right': right,
             'disparity': disparity,
             'glass_mask': mask,
+            'glass_mask_strict': mask_strict,
         }
 
     def _normalize_image(self, img: np.ndarray) -> np.ndarray:
@@ -317,8 +326,9 @@ class PIDSSyntheticDataset(Dataset):
         left: np.ndarray,
         right: np.ndarray,
         disparity: np.ndarray,
-        mask: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        mask: np.ndarray,
+        mask_strict: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """數據增強"""
         # 隨機亮度調整
         if np.random.rand() < 0.5:
@@ -340,8 +350,9 @@ class PIDSSyntheticDataset(Dataset):
             right = np.flip(right, axis=0).copy()
             disparity = np.flip(disparity, axis=0).copy()
             mask = np.flip(mask, axis=0).copy()
+            mask_strict = np.flip(mask_strict, axis=0).copy()
 
-        return left, right, disparity, mask
+        return left, right, disparity, mask, mask_strict
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         scene_name = self.scenes[idx]
@@ -351,6 +362,7 @@ class PIDSSyntheticDataset(Dataset):
         right = data['right']
         disparity = data['disparity']
         mask = data['glass_mask']
+        mask_strict = data['glass_mask_strict']
 
         # 正規化圖像
         left = self._normalize_image(left)
@@ -358,7 +370,7 @@ class PIDSSyntheticDataset(Dataset):
 
         # 數據增強 (只做亮度/對比度/翻轉，不做 crop 以保持全局上下文)
         if self.augment:
-            left, right, disparity, mask = self._augment(left, right, disparity, mask)
+            left, right, disparity, mask, mask_strict = self._augment(left, right, disparity, mask, mask_strict)
 
         # 確保範圍正確
         left = np.clip(left, 0, 1)
@@ -369,6 +381,7 @@ class PIDSSyntheticDataset(Dataset):
         right_tensor = torch.from_numpy(right.copy()).permute(2, 0, 1).float()
         disparity_tensor = torch.from_numpy(disparity.copy()).float().unsqueeze(0)
         mask_tensor = torch.from_numpy(mask.copy()).float().unsqueeze(0)
+        mask_strict_tensor = torch.from_numpy(mask_strict.copy()).float().unsqueeze(0)
 
         # 創建有效深度遮罩
         valid_mask = (disparity_tensor > 0) & (disparity_tensor < self.max_disparity)
@@ -377,7 +390,8 @@ class PIDSSyntheticDataset(Dataset):
             'left': left_tensor,
             'right': right_tensor,
             'disparity': disparity_tensor,
-            'glass_mask': mask_tensor,
+            'glass_mask': mask_tensor,              # 聯集 mask (用於訓練)
+            'glass_mask_strict': mask_strict_tensor, # 交集 mask (用於評估)
             'valid_mask': valid_mask.float(),
             'scene_name': scene_name,
         }

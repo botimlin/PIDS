@@ -41,17 +41,21 @@ def parse_quality_report(report_path: Path) -> Set[str]:
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 尋找表格中標記為 ✗ 的場景
-    pattern = r'\|\s*(scene_\d+)\s*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*✗\s*\|'
-    matches = re.findall(pattern, content)
-    for scene_name in matches:
-        failed_scenes.add(scene_name)
+    # 尋找表格中標記為 ✗ 的場景（匹配包含 ✗ 的任何行）
+    # V5 格式: | scene_0001 | 🟢 excellent | 85 | ... | 95.0% ✗ | 1.05x ✓ | ... |
+    for line in content.split('\n'):
+        if '✗' in line:
+            match = re.search(r'\|\s*(scene_\d+)\s*\|', line)
+            if match:
+                failed_scenes.add(match.group(1))
 
-    # 也檢查詳細報告區塊
-    pattern2 = r'###\s+(scene_\d+)\s+✗'
-    matches2 = re.findall(pattern2, content)
-    for scene_name in matches2:
-        failed_scenes.add(scene_name)
+    # 也檢查失敗場景區塊的表格
+    # 格式: | scene_0001 | 失敗原因 |
+    fail_section = re.search(r'## 失敗場景.*?\n\n(.*?)(?=\n---|\n##|\Z)', content, re.DOTALL)
+    if fail_section:
+        fail_table = fail_section.group(1)
+        for match in re.finditer(r'\|\s*(scene_\d+)\s*\|', fail_table):
+            failed_scenes.add(match.group(1))
 
     print(f"Found {len(failed_scenes)} failed scenes in quality report")
     return failed_scenes

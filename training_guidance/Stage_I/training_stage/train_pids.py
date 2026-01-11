@@ -31,8 +31,8 @@ from pids_dataset import PIDSSyntheticDataset, create_data_loaders
 sys.path.append('core')
 from raft_stereo import RAFTStereo
 
-# 保留自定義 Loss
-from pids_model import PIDSStereoLoss
+# 保留自定義 Loss 和 Dual-Stream 架構
+from pids_model import PIDSStereoLoss, PIDSStereoDualStream, build_model_dual_stream
 
 
 class AverageMeter:
@@ -72,11 +72,13 @@ class Trainer:
         # 建立模型
         self.model = self._build_model()
 
-        # 建立損失函數
+        # 建立損失函數 (強化版: 含 Polarization-aware 權重)
         self.criterion = PIDSStereoLoss(
             gamma=args.gamma,
             max_disp=args.max_disp,
             glass_weight=args.glass_weight,
+            pol_weight=getattr(args, 'pol_weight', 2.0),  # Dual-Stream 專用
+            strict_glass_weight=getattr(args, 'strict_glass_weight', 1.0),  # 嚴格 mask 額外權重
         )
 
         # 建立優化器
@@ -115,39 +117,72 @@ class Trainer:
         self._save_config()
 
     def _build_model(self) -> nn.Module:
-        """建立模型 - 使用官方 RAFT-Stereo"""
-        # 創建 args 對象給 RAFTStereo (官方格式)
-        class ModelArgs:
-            pass
+        """建立模型 - 支持標準 RAFT-Stereo 或 Dual-Stream 偏振架構"""
 
-        model_args = ModelArgs()
-        # 官方用 hidden_dims (list)，不是 hidden_dim
-        model_args.hidden_dims = [self.args.hidden_dim] * 3  # [128, 128, 128]
-        model_args.context_dims = [self.args.context_dim] * 3
-        model_args.corr_levels = self.args.corr_levels
-        model_args.corr_radius = self.args.corr_radius
-        model_args.n_downsample = 2  # 官方預設
-        model_args.slow_fast_gru = False  # 官方預設
-        model_args.n_gru_layers = 3  # 官方預設
-        model_args.mixed_precision = self.args.mixed_precision or self.args.bf16
-        model_args.shared_backbone = False  # 官方預設
-        model_args.context_norm = 'batch'  # 官方預設
-        model_args.corr_implementation = 'reg'  # 官方預設 (reg, alt, reg_cuda, alt_cuda)
+        if self.args.dual_stream:
+            # ========== Dual-Stream 偏振架構 ==========
+            print("Building Dual-Stream model with Polarization Encoder...")
+            model = PIDSStereoDualStream(
+                pol_dim=self.args.pol_dim,
+                pol_threshold=self.args.pol_threshold,
+                pol_sharpness=self.args.pol_sharpness,
+                hidden_dim=self.args.hidden_dim,
+                context_dim=self.args.context_dim,
+                feature_dim=self.args.feature_dim,
+                corr_levels=self.args.corr_levels,
+                corr_radius=self.args.corr_radius,
+                iters=self.args.iters,
+                mixed_precision=self.args.mixed_precision or self.args.bf16,
+            )
 
-        model = RAFTStereo(model_args)
+            # 載入預訓練權重 (部分匹配到 fnet/cnet/update_block)
+            if self.args.pretrained:
+                self._load_pretrained_weights(model, self.args.pretrained)
+                print("  Polarization Encoder & Fusion initialized randomly (new layers)")
 
-        # 載入預訓練權重 (論文: θ_init ← θ_pre from Scene Flow)
-        if self.args.pretrained:
-            self._load_pretrained_weights(model, self.args.pretrained)
+            # 凍結 Feature Encoder
+            if self.args.freeze_fnet:
+                frozen_count = 0
+                for name, param in model.named_parameters():
+                    if 'fnet' in name:
+                        param.requires_grad = False
+                        frozen_count += 1
+                print(f"Frozen {frozen_count} parameters in feature encoder (fnet)")
 
-        # 凍結 Feature Encoder (減少過擬合，只微調 context + GRU)
-        if self.args.freeze_fnet:
-            frozen_count = 0
-            for name, param in model.named_parameters():
-                if 'fnet' in name:
-                    param.requires_grad = False
-                    frozen_count += 1
-            print(f"Frozen {frozen_count} parameters in feature encoder (fnet)")
+        else:
+            # ========== 標準 RAFT-Stereo ==========
+            # 創建 args 對象給 RAFTStereo (官方格式)
+            class ModelArgs:
+                pass
+
+            model_args = ModelArgs()
+            # 官方用 hidden_dims (list)，不是 hidden_dim
+            model_args.hidden_dims = [self.args.hidden_dim] * 3  # [128, 128, 128]
+            model_args.context_dims = [self.args.context_dim] * 3
+            model_args.corr_levels = self.args.corr_levels
+            model_args.corr_radius = self.args.corr_radius
+            model_args.n_downsample = 2  # 官方預設
+            model_args.slow_fast_gru = False  # 官方預設
+            model_args.n_gru_layers = 3  # 官方預設
+            model_args.mixed_precision = self.args.mixed_precision or self.args.bf16
+            model_args.shared_backbone = False  # 官方預設
+            model_args.context_norm = 'batch'  # 官方預設
+            model_args.corr_implementation = 'reg'  # 官方預設 (reg, alt, reg_cuda, alt_cuda)
+
+            model = RAFTStereo(model_args)
+
+            # 載入預訓練權重 (論文: θ_init ← θ_pre from Scene Flow)
+            if self.args.pretrained:
+                self._load_pretrained_weights(model, self.args.pretrained)
+
+            # 凍結 Feature Encoder (減少過擬合，只微調 context + GRU)
+            if self.args.freeze_fnet:
+                frozen_count = 0
+                for name, param in model.named_parameters():
+                    if 'fnet' in name:
+                        param.requires_grad = False
+                        frozen_count += 1
+                print(f"Frozen {frozen_count} parameters in feature encoder (fnet)")
 
         # 多 GPU
         if torch.cuda.device_count() > 1:
@@ -221,21 +256,63 @@ class Trainer:
 
         Note: 根據 PIDS 論文，使用 eps=1e-6 而非預設的 1e-8
         這是為了處理 specular highlights 造成的極端梯度，確保數值穩定性
+
+        Dual-Stream 模式: 新層 (pol_encoder, fusion) 用更高學習率
         """
-        if self.args.optimizer == 'adamw':
-            optimizer = optim.AdamW(
-                self.model.parameters(),
-                lr=self.args.lr,
-                weight_decay=self.args.weight_decay,
-                eps=self.args.adam_eps,  # 論文建議 1e-6
-            )
+        if self.args.dual_stream:
+            # Dual-Stream: 不同參數組用不同學習率
+            # 新層 (pol_encoder, fusion) 學習率 = base_lr * pol_lr_mult
+            base_params = []
+            new_params = []
+
+            # 處理 DataParallel
+            model = self.model.module if hasattr(self.model, 'module') else self.model
+
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if 'pol_encoder' in name or 'fusion' in name:
+                    new_params.append(param)
+                else:
+                    base_params.append(param)
+
+            param_groups = [
+                {'params': base_params, 'lr': self.args.lr},
+                {'params': new_params, 'lr': self.args.lr * self.args.pol_lr_mult},
+            ]
+
+            print(f"Optimizer param groups:")
+            print(f"  Base params (RAFT-Stereo): {len(base_params)} tensors, lr={self.args.lr}")
+            print(f"  New params (Pol Encoder): {len(new_params)} tensors, lr={self.args.lr * self.args.pol_lr_mult}")
+
+            if self.args.optimizer == 'adamw':
+                optimizer = optim.AdamW(
+                    param_groups,
+                    weight_decay=self.args.weight_decay,
+                    eps=self.args.adam_eps,
+                )
+            else:
+                optimizer = optim.Adam(
+                    param_groups,
+                    weight_decay=self.args.weight_decay,
+                    eps=self.args.adam_eps,
+                )
         else:
-            optimizer = optim.Adam(
-                self.model.parameters(),
-                lr=self.args.lr,
-                weight_decay=self.args.weight_decay,
-                eps=self.args.adam_eps,
-            )
+            # 標準模式: 所有參數同一學習率
+            if self.args.optimizer == 'adamw':
+                optimizer = optim.AdamW(
+                    self.model.parameters(),
+                    lr=self.args.lr,
+                    weight_decay=self.args.weight_decay,
+                    eps=self.args.adam_eps,  # 論文建議 1e-6
+                )
+            else:
+                optimizer = optim.Adam(
+                    self.model.parameters(),
+                    lr=self.args.lr,
+                    weight_decay=self.args.weight_decay,
+                    eps=self.args.adam_eps,
+                )
 
         return optimizer
 
@@ -364,14 +441,25 @@ class Trainer:
             disp_gt = batch['disparity'].to(self.device)
             valid_mask = batch['valid_mask'].to(self.device)
             glass_mask = batch['glass_mask'].to(self.device)
+            glass_mask_strict = batch.get('glass_mask_strict', glass_mask).to(self.device)
 
             # 混合精度訓練 (FP16 / BF16 / FP32)
             if self.scaler:
                 # FP16 模式 (需要 GradScaler)
                 with autocast('cuda', dtype=self.amp_dtype):
-                    flow_preds = self.model(left, right, iters=self.args.iters)
-                    disp_preds = [-f for f in flow_preds]
-                    loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                    # Dual-Stream: 傳遞 GT disparity 用於對齊 pol_diff 計算
+                    if self.args.dual_stream:
+                        flow_preds = self.model(left, right, iters=self.args.iters, disparity_gt=disp_gt)
+                    else:
+                        flow_preds = self.model(left, right, iters=self.args.iters)
+                    # flow shape: (B, 2, H, W)，只取第一個 channel 作為 disparity
+                    disp_preds = [-f[:, :1] for f in flow_preds]
+                    # Dual-Stream: 傳遞 pol_diff 給 Polarization-aware Loss
+                    pol_diff = None
+                    if self.args.dual_stream and hasattr(self.model, 'get_pol_diff'):
+                        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+                        pol_diff = model_ref.get_pol_diff()
+                    loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask, pol_diff, glass_mask_strict)
                     loss = loss / accum_steps
 
                 self.scaler.scale(loss).backward()
@@ -391,9 +479,19 @@ class Trainer:
             elif self.amp_dtype is not None:
                 # BF16 模式 (不需要 GradScaler，數值範圍同 FP32)
                 with autocast('cuda', dtype=self.amp_dtype):
-                    flow_preds = self.model(left, right, iters=self.args.iters)
-                    disp_preds = [-f for f in flow_preds]
-                    loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                    # Dual-Stream: 傳遞 GT disparity 用於對齊 pol_diff 計算
+                    if self.args.dual_stream:
+                        flow_preds = self.model(left, right, iters=self.args.iters, disparity_gt=disp_gt)
+                    else:
+                        flow_preds = self.model(left, right, iters=self.args.iters)
+                    # flow shape: (B, 2, H, W)，只取第一個 channel 作為 disparity
+                    disp_preds = [-f[:, :1] for f in flow_preds]
+                    # Dual-Stream: 傳遞 pol_diff 給 Polarization-aware Loss
+                    pol_diff = None
+                    if self.args.dual_stream and hasattr(self.model, 'get_pol_diff'):
+                        model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+                        pol_diff = model_ref.get_pol_diff()
+                    loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask, pol_diff, glass_mask_strict)
                     loss = loss / accum_steps
 
                 loss.backward()
@@ -410,9 +508,19 @@ class Trainer:
 
             else:
                 # FP32 模式 (全精度)
-                flow_preds = self.model(left, right, iters=self.args.iters)
-                disp_preds = [-f for f in flow_preds]
-                loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+                # Dual-Stream: 傳遞 GT disparity 用於對齊 pol_diff 計算
+                if self.args.dual_stream:
+                    flow_preds = self.model(left, right, iters=self.args.iters, disparity_gt=disp_gt)
+                else:
+                    flow_preds = self.model(left, right, iters=self.args.iters)
+                # flow shape: (B, 2, H, W)，只取第一個 channel 作為 disparity
+                disp_preds = [-f[:, :1] for f in flow_preds]
+                # Dual-Stream: 傳遞 pol_diff 給 Polarization-aware Loss
+                pol_diff = None
+                if self.args.dual_stream and hasattr(self.model, 'get_pol_diff'):
+                    model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+                    pol_diff = model_ref.get_pol_diff()
+                loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask, pol_diff, glass_mask_strict)
                 loss = loss / accum_steps
 
                 loss.backward()
@@ -489,12 +597,24 @@ class Trainer:
             right = batch['right'].to(self.device)
             disp_gt = batch['disparity'].to(self.device)
             valid_mask = batch['valid_mask'].to(self.device)
-            glass_mask = batch['glass_mask'].to(self.device)
+            # 驗證時使用嚴格 mask (交集) 以獲得更精確的 Glass EPE
+            glass_mask_strict = batch.get('glass_mask_strict', batch['glass_mask']).to(self.device)
 
             # 使用更多迭代進行驗證
-            flow_preds = self.model(left, right, iters=self.args.iters + 4)
-            disp_preds = [-f for f in flow_preds]
-            loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask)
+            # Dual-Stream: 傳遞 GT disparity 用於對齊 pol_diff 計算
+            if self.args.dual_stream:
+                flow_preds = self.model(left, right, iters=self.args.iters + 4, disparity_gt=disp_gt)
+            else:
+                flow_preds = self.model(left, right, iters=self.args.iters + 4)
+            # flow shape: (B, 2, H, W)，只取第一個 channel 作為 disparity
+            disp_preds = [-f[:, :1] for f in flow_preds]
+            # Dual-Stream: 傳遞 pol_diff 給 Polarization-aware Loss
+            pol_diff = None
+            if self.args.dual_stream and hasattr(self.model, 'get_pol_diff'):
+                model_ref = self.model.module if hasattr(self.model, 'module') else self.model
+                pol_diff = model_ref.get_pol_diff()
+            # 驗證時使用嚴格 mask 計算 Glass EPE，不需要額外加權
+            loss, metrics = self.criterion(disp_preds, disp_gt, valid_mask, glass_mask_strict, pol_diff, None)
 
             batch_size = left.size(0)
             meters['loss'].update(metrics['loss'], batch_size)
@@ -575,11 +695,17 @@ class Trainer:
     def train(self):
         """主訓練循環"""
         print("=" * 60)
-        print("PIDS Training - Stage I (Synthetic Pre-training)")
+        if self.args.dual_stream:
+            print("PIDS Training - Stage I (Dual-Stream Polarization)")
+        else:
+            print("PIDS Training - Stage I (Synthetic Pre-training)")
         print("=" * 60)
         eff_batch = self.args.batch_size * self.args.accumulation_steps
         print(f"Effective batch size: {eff_batch} (batch={self.args.batch_size} x accum={self.args.accumulation_steps})")
         print(f"Validation every {self.args.val_freq} steps")
+        if self.args.dual_stream:
+            print(f"Polarization Encoder: dim={self.args.pol_dim}, threshold={self.args.pol_threshold}, sharpness={self.args.pol_sharpness}")
+            print(f"Learning rate: base={self.args.lr}, pol_encoder={self.args.lr * self.args.pol_lr_mult}")
         print("=" * 60)
 
         epoch = self.start_epoch
@@ -621,6 +747,20 @@ def parse_args():
     parser.add_argument('--iters', type=int, default=12,
                         help='Number of iterations for disparity refinement')
 
+    # Dual-Stream 偏振編碼器 (強化版)
+    parser.add_argument('--dual_stream', action='store_true',
+                        help='Use Dual-Stream architecture with Polarization Encoder')
+    parser.add_argument('--pol_dim', type=int, default=64,
+                        help='Polarization encoder output dimension (強化版: 64)')
+    parser.add_argument('--pol_threshold', type=float, default=0.05,
+                        help='Soft threshold for polarization difference (強化版: 0.05 捕捉更弱信號)')
+    parser.add_argument('--pol_sharpness', type=float, default=20.0,
+                        help='Sharpness of soft threshold sigmoid')
+    parser.add_argument('--pol_lr_mult', type=float, default=5.0,
+                        help='Learning rate multiplier for polarization encoder (降低避免過擬合)')
+    parser.add_argument('--pol_weight', type=float, default=2.0,
+                        help='Polarization-aware loss weight (偏振區域額外權重)')
+
     # 訓練
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--accumulation_steps', type=int, default=1,
@@ -635,8 +775,10 @@ def parse_args():
     parser.add_argument('--clip_grad', type=float, default=1.0)
     parser.add_argument('--gamma', type=float, default=0.9,
                         help='Loss weight decay factor')
-    parser.add_argument('--glass_weight', type=float, default=3.0,
-                        help='Extra weight for glass region loss (實驗 #11 最佳值)')
+    parser.add_argument('--glass_weight', type=float, default=5.0,
+                        help='Extra weight for glass region loss (強化版: 5.0)')
+    parser.add_argument('--strict_glass_weight', type=float, default=0.5,
+                        help='Extra weight for strict glass mask (交集區域，保守預設 0.5)')
     parser.add_argument('--max_disp', type=float, default=576.0)
     parser.add_argument('--d1_weight', type=float, default=0.1,
                         help='Weight for D1 in composite score (composite = glass_epe + d1_weight * d1_error)')

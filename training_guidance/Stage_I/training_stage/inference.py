@@ -19,35 +19,56 @@ import torch.nn.functional as F
 from pathlib import Path
 import cv2
 
-from pids_model import build_model
+from pids_model import build_model, build_model_dual_stream, PIDSStereoDualStream
 from pids_dataset import EXRReader
 
 
 def load_model(checkpoint_path: str, device: torch.device):
-    """載入模型"""
+    """載入模型（支援 Dual-Stream）"""
     print(f"Loading model from: {checkpoint_path}")
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     # 獲取模型配置
     args = checkpoint.get('args', {})
-    model_cfg = {
-        'hidden_dim': args.get('hidden_dim', 128),
-        'context_dim': args.get('context_dim', 128),
-        'feature_dim': args.get('feature_dim', 128),
-        'corr_levels': args.get('corr_levels', 4),
-        'corr_radius': args.get('corr_radius', 4),
-        'iters': args.get('iters', 12),
-    }
+    is_dual_stream = args.get('dual_stream', False)
 
-    model = build_model(model_cfg)
+    if is_dual_stream:
+        # Dual-Stream 模型
+        model_cfg = {
+            'hidden_dim': args.get('hidden_dim', 128),
+            'context_dim': args.get('context_dim', 128),
+            'feature_dim': args.get('feature_dim', 128),
+            'corr_levels': args.get('corr_levels', 4),
+            'corr_radius': args.get('corr_radius', 4),
+            'iters': args.get('iters', 12),
+            'pol_dim': args.get('pol_dim', 64),
+            'pol_threshold': args.get('pol_threshold', 0.05),
+            'pol_sharpness': args.get('pol_sharpness', 20.0),
+        }
+        model = build_model_dual_stream(model_cfg)
+        print(f"  Architecture: Dual-Stream (pol_dim={model_cfg['pol_dim']})")
+    else:
+        # 標準模型
+        model_cfg = {
+            'hidden_dim': args.get('hidden_dim', 128),
+            'context_dim': args.get('context_dim', 128),
+            'feature_dim': args.get('feature_dim', 128),
+            'corr_levels': args.get('corr_levels', 4),
+            'corr_radius': args.get('corr_radius', 4),
+            'iters': args.get('iters', 12),
+        }
+        model = build_model(model_cfg)
+        print(f"  Architecture: Standard RAFT-Stereo")
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
 
-    print(f"Model loaded (Best EPE: {checkpoint.get('best_epe', 'N/A')})")
+    best_metric = checkpoint.get('best_glass_epe', checkpoint.get('best_epe', 'N/A'))
+    print(f"  Best Glass EPE: {best_metric}")
 
-    return model
+    return model, is_dual_stream
 
 
 def load_image(path: str) -> np.ndarray:
@@ -93,9 +114,12 @@ def inference(
     right_path: str,
     device: torch.device,
     iters: int = 20,
+    is_dual_stream: bool = False,
+    pol_update_iters: list = None,
+    use_two_pass: bool = False,
 ) -> np.ndarray:
     """
-    運行推理
+    運行推理（支援兩階段偏振對齊）
 
     Args:
         model: 模型
@@ -103,6 +127,9 @@ def inference(
         right_path: 右圖像路徑
         device: 計算設備
         iters: 迭代次數
+        is_dual_stream: 是否為 Dual-Stream 模型
+        pol_update_iters: 偏振特徵更新時機（例如 [6] 表示第6次迭代後更新）
+        use_two_pass: 是否使用完整兩階段推論（更精確但較慢）
 
     Returns:
         視差圖 (H, W)
@@ -128,7 +155,35 @@ def inference(
     right_tensor = right_tensor.to(device)
 
     # 推理
-    disp = model(left_tensor, right_tensor, iters=iters, test_mode=True)
+    if is_dual_stream and hasattr(model, 'forward_inference'):
+        if use_two_pass:
+            # 完整兩階段推論（更精確）
+            print("  Using two-pass inference...")
+            flow = model.forward_two_pass(
+                left_tensor, right_tensor,
+                iters_pass1=iters // 2,
+                iters_pass2=iters // 2,
+            )
+        else:
+            # 高效兩階段推論（推薦）
+            if pol_update_iters is None:
+                pol_update_iters = [iters // 2]
+            print(f"  Using forward_inference with pol_update at {pol_update_iters}...")
+            flow = model.forward_inference(
+                left_tensor, right_tensor,
+                iters=iters,
+                pol_update_iters=pol_update_iters,
+            )
+        # flow shape: (B, 2, H, W)，取 x-component 作為 disparity
+        disp = flow[:, :1, :, :]
+    else:
+        # 標準推論
+        flow = model(left_tensor, right_tensor, iters=iters, test_mode=True)
+        # 處理不同的輸出格式
+        if flow.shape[1] == 2:
+            disp = flow[:, :1, :, :]
+        else:
+            disp = flow
 
     # 裁切回原始大小
     disp = disp[:, :, :h, :w]
@@ -175,10 +230,15 @@ def main():
                         help='Path to right image (I⊥)')
     parser.add_argument('--output', type=str, default='output_disparity.png',
                         help='Output path for disparity')
-    parser.add_argument('--iters', type=int, default=20,
+    parser.add_argument('--iters', type=int, default=24,
                         help='Number of iterations')
     parser.add_argument('--no_colormap', action='store_true',
                         help='Save grayscale instead of colormap')
+    # 兩階段推論參數
+    parser.add_argument('--two_pass', action='store_true',
+                        help='Use full two-pass inference (more accurate, slower)')
+    parser.add_argument('--pol_update_at', type=int, nargs='+', default=None,
+                        help='Iterations to update polarization features (e.g., --pol_update_at 6 12)')
 
     args = parser.parse_args()
 
@@ -187,14 +247,24 @@ def main():
     print(f"Using device: {device}")
 
     # 載入模型
-    model = load_model(args.checkpoint, device)
+    model, is_dual_stream = load_model(args.checkpoint, device)
 
     # 運行推理
     print(f"\nRunning inference...")
     print(f"  Left: {args.left}")
     print(f"  Right: {args.right}")
+    print(f"  Iterations: {args.iters}")
+    if is_dual_stream:
+        print(f"  Two-pass mode: {args.two_pass}")
+        print(f"  Pol update at: {args.pol_update_at or [args.iters // 2]}")
 
-    disp = inference(model, args.left, args.right, device, iters=args.iters)
+    disp = inference(
+        model, args.left, args.right, device,
+        iters=args.iters,
+        is_dual_stream=is_dual_stream,
+        pol_update_iters=args.pol_update_at,
+        use_two_pass=args.two_pass,
+    )
 
     # 保存結果
     save_disparity(disp, args.output, colormap=not args.no_colormap)

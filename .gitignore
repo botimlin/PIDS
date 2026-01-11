@@ -8,13 +8,20 @@ scenes_output_V2/
 **/scenes_output/
 **/scenes_output_V2/
 
+# Passed params (rendering parameters)
+**/passed_params*/
+
 # ============================================================
 # Rendered output (Mitsuba - large EXR files)
 # ============================================================
 **/output/
+**/output_*/
 **/output_v2/
 training_guidance/Stage_I/sampling_stage/rendering_v3/output/
 training_guidance/Stage_I/sampling_stage/rendering_v3/multi_gpu/output/
+
+# Raw dataset outputs
+**/output*/
 
 # EXR files (rendered images)
 *.exr
@@ -27,6 +34,14 @@ training_guidance/Stage_I/training_stage/dataset_V2/
 **/dataset/
 **/dataset_V2/
 
+# PIDS datasets (downloaded from HuggingFace)
+**/PIDS_dataset_*/
+**/dataset_pol_*/
+**/dataset_nopol_*/
+
+# Evaluation results
+**/eval_results/
+
 # ============================================================
 # Model weights & checkpoints
 # ============================================================
@@ -34,7 +49,11 @@ training_guidance/Stage_I/training_stage/pretrained/
 training_guidance/Stage_I/training_stage/models/
 training_guidance/Stage_I/training_stage/checkpoints/
 **/checkpoints/
+**/checkpoints_*/
 **/models/*.pth
+
+# Experiment folders (contain checkpoints)
+**/exp*/
 
 # Model files
 *.pth

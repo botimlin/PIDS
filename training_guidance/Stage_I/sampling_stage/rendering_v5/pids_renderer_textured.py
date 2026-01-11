@@ -1,8 +1,37 @@
 """
-PIDS Stage 1 Renderer v4.0.0 (Textured)
-========================================
+PIDS Stage 1 Renderer v5.1.8 (Strict Glass Mask)
+=================================================
 
-Fork from v3.6.0 (pids_renderer_fast.py)，新增紋理貼圖支持。
+Fork from v4.0.0，修復偏振信號問題並整合 QA。
+
+v5.1.8 更新:
+-----------
+1. 新增 glass_mask_strict（嚴格 mask，左右相機交集）
+   - glass_mask（聯集）: 訓練用，覆蓋完整邊緣
+   - glass_mask_strict（交集）: 評估用，只有確定是玻璃的像素
+2. 新增 --rerender-strict-mask 模式
+   - 用法: --rerender-strict-mask <params_dir> --obj-dir <obj_dir> --output <out> [--scene-list <file>]
+   - 輸出: *_glass_mask_strict.exr
+
+v5.1.7 更新:
+-----------
+1. _is_glass_name() 改用精確匹配 'Glass_Clear'
+   - 舊邏輯: 'glass' in name -> 誤判 'glass_table', 'glass_shelf'
+   - 新邏輯: name == 'Glass_Clear' (Blender 導出標準名稱)
+2. 新增 --rerender-mask 模式
+   - 使用已有 params.json 重新渲染 glass mask（聯集）
+   - 不需重新渲染完整場景
+   - 支持 --scene-list 篩選（如 train_scenes.txt）
+   - 用法: --rerender-mask <params_dir> --obj-dir <obj_dir> --output <out> [--scene-list <file>]
+
+v5.0.0 更新:
+-----------
+1. 天花板光強度降低 (100-250 → 10-25)，減少非偏振光干擾
+2. DoLP 改用 Stokes 參數計算 (避免 65mm 基線誤差)
+3. Glass Mask 改為左右相機聯集 (完整覆蓋邊緣)
+4. DoLP 計算使用對齊的 mask (各相機用自己視角)
+5. SNR 改用 DoLP-based 計算 (避免亮度差異影響)
+6. 整合 QA 驗證 (渲染完成自動執行)
 
 v4.0.0 更新:
 -----------
@@ -53,8 +82,8 @@ Chamber 配置 (Blender/OBJ 座標，單位 mm):
 5. I⊥ (θ=90°) = 0.5 * (S0 - S1)
 
 作者: PIDS Project
-版本: 4.0.0
-日期: 2025-12-29
+版本: 5.1.6
+日期: 2026-01-06
 
 Copyright (c) 2025-2026 Po-Ting Lin
 Released under the MIT License (see LICENSE file).
@@ -69,6 +98,7 @@ import json
 import argparse
 import gc
 import math
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import time
@@ -82,8 +112,22 @@ def lazy_import_qa():
     """延遲載入 QA 模組"""
     global QualityValidator
     if QualityValidator is None:
-        from Quality_Assurance.quality_validator import QualityValidator as QV
-        QualityValidator = QV
+        try:
+            # 方法1: 直接 import（如果已在 PYTHONPATH）
+            from Quality_Assurance.quality_validator import QualityValidator as QV
+            QualityValidator = QV
+        except ImportError:
+            try:
+                # 方法2: 將腳本所在目錄加入 sys.path
+                script_dir = Path(__file__).parent.resolve()
+                if str(script_dir) not in sys.path:
+                    sys.path.insert(0, str(script_dir))
+                from Quality_Assurance.quality_validator import QualityValidator as QV
+                QualityValidator = QV
+            except ImportError:
+                # 方法3: 如果是符號連結或複製到其他位置，返回 None
+                print("[QA] 無法載入 Quality_Assurance 模組，跳過 QA 驗證")
+                return None
     return QualityValidator
 
 # 延遲 import mitsuba，避免主進程初始化 CUDA
@@ -105,6 +149,83 @@ def deterministic_hash(s: str) -> int:
     return int(hashlib.md5(s.encode()).hexdigest(), 16) % (2**32)
 
 
+def compute_world_aligned_theta(origin: Tuple[float, float, float],
+                                  target: Tuple[float, float, float],
+                                  world_theta: float = 0.0,
+                                  up: Tuple[float, float, float] = (0, 1, 0)) -> float:
+    """
+    計算使偏振角度在世界坐標系中保持一致的 theta 值。
+
+    問題：Mitsuba 的 polarizer BSDF 中的 theta 是相對於 look_at 創建的
+    局部坐標系。當 origin/target 變化時，局部坐標系旋轉，導致
+    同樣的 theta 值在世界坐標中代表不同的偏振角度。
+
+    解決方案：計算補償角度，使得無論 look_at 方向如何變化，
+    世界坐標中的偏振角度都保持 world_theta。
+
+    Args:
+        origin: 偏振片位置（Mitsuba 坐標，單位 m）
+        target: 偏振片朝向的目標點（Mitsuba 坐標，單位 m）
+        world_theta: 期望的世界坐標偏振角度（度），0=水平，90=垂直
+        up: 世界向上方向（默認 Mitsuba Y 軸）
+
+    Returns:
+        theta: 需要在 polarizer BSDF 中使用的角度（度）
+
+    物理說明：
+        - 世界坐標系：X=水平右, Y=垂直上, Z=深度
+        - world_theta=0° 表示偏振方向沿世界 X 軸（水平）
+        - world_theta=90° 表示偏振方向沿世界 Y 軸（垂直）
+    """
+    origin = np.array(origin)
+    target = np.array(target)
+    up = np.array(up)
+
+    # 計算 look_at 的局部坐標系
+    forward = target - origin
+    forward_len = np.linalg.norm(forward)
+    if forward_len < 1e-9:
+        return world_theta  # origin == target，無法計算，返回原值
+    forward = forward / forward_len
+
+    # 計算 right 軸 (局部 X)
+    right = np.cross(up, forward)
+    right_len = np.linalg.norm(right)
+    if right_len < 1e-9:
+        # forward 與 up 平行，使用世界 X 軸作為 right
+        right = np.array([1.0, 0.0, 0.0])
+    else:
+        right = right / right_len
+
+    # 計算 local up 軸 (局部 Y)
+    local_up = np.cross(forward, right)
+    local_up = local_up / np.linalg.norm(local_up)
+
+    # 世界坐標中的偏振方向
+    # world_theta=0° → 水平方向 (世界 X 軸)
+    # world_theta=90° → 垂直方向 (世界 Y 軸)
+    world_theta_rad = np.radians(world_theta)
+    world_pol_dir = np.array([np.cos(world_theta_rad), np.sin(world_theta_rad), 0.0])
+
+    # 將世界偏振方向投影到垂直於 forward 的平面上
+    # (偏振方向必須垂直於光傳播方向)
+    proj = world_pol_dir - np.dot(world_pol_dir, forward) * forward
+    proj_len = np.linalg.norm(proj)
+    if proj_len < 1e-9:
+        # 世界偏振方向與 forward 平行，無法投影
+        # 這種情況下使用局部水平
+        return 0.0
+    proj = proj / proj_len
+
+    # 計算投影在局部坐標系中的角度
+    # 局部坐標系：right = 局部 X，local_up = 局部 Y
+    cos_theta = np.dot(proj, right)
+    sin_theta = np.dot(proj, local_up)
+    local_theta = np.arctan2(sin_theta, cos_theta)
+
+    return np.degrees(local_theta)
+
+
 # ============================================================
 # 配置
 # ============================================================
@@ -115,9 +236,12 @@ class Config:
     # 渲染設定
     WIDTH = 640
     HEIGHT = 480
-    SPP = 8192            # 每像素樣本數 (8K)
-    SPP_PER_BATCH = 1024  # 分批渲染，避免 GPU OOM (8 批次)
+    SPP = 1024            # 每像素樣本數 (1K，批渲染用)
+    SPP_PER_BATCH = 512   # 分批渲染，避免 GPU OOM (2 批次)
     MAX_DEPTH = 12        # 光線反彈次數
+
+    # QA 指標 floor 值（避免除以零產生無意義的超大比值）
+    DOLP_FLOOR = 0.01     # 背景 DoLP 下限 (1%)，用於計算比值
 
     # Chamber 尺寸 (Blender/OBJ 座標系，單位 mm)
     # 這些值來自 blender_furniture_randomizer_v17.py
@@ -149,18 +273,26 @@ class Config:
     GLASS_Y_MIN = 528.0
     GLASS_Y_MAX = 695.0
 
-    # 光源配置
-    LED_INTENSITY = 2000.0          # LED 強度
-    LED_SIZE = (180.0, 100.0)       # LED 面光源尺寸 (寬, 高)
-    LED_POSITION_Y = 280.0          # LED 高度 (chamber 頂部附近)
-    LED_POSITION_Z = 420.0          # LED 深度 (相機前方)
+    # 光源配置 - 整面偏振光源
+    # 原理：大面積均勻偏振照明
+    # - 玻璃鏡面反射 → 保持偏振 → I∥ ≠ I⊥
+    # - 背景漫反射 → 去偏振 → I∥ ≈ I⊥
+    # 位置：相機同側（前牆位置），面向場景
+    LED_INTENSITY = 10000.0         # LED 強度
+    LED_SIZE = (500.0, 250.0)       # LED 尺寸：覆蓋整個場景 (寬500mm x 高250mm)
+    LED_POSITION_X = 0.0            # LED X 位置（中心，均勻照明）
+    LED_POSITION_Y = 150.0          # LED 高度 (場景中間)
+    LED_POSITION_Z = 380.0          # LED 深度 (相機前方，前牆附近)
+    LED_TARGET = (0.0, 600.0, 150.0)  # LED 朝向：場景中心
 
     # 環境光
     AMBIENT_INTENSITY = 0.0 # 已停用，由天花板發光體取代
 
-    # 天花板燈陣列（獨立光源，不依賴材質偵測）
-    CEILING_LIGHTS_ENABLED = False # 已停用，改為將天花板直接設為發光體
-    CEILING_EMITTER_INTENSITY = 15.0 # 大幅降低：避免非偏振光淹沒偏振信號
+    # 天花板燈陣列（非偏振光源，稀釋背景殘餘偏振）
+    # 原理：背景漫反射需要多次 bounce 才能完全去偏振
+    # 加入非偏振頂光，讓背景有更多非偏振光，稀釋殘餘偏振
+    CEILING_LIGHTS_ENABLED = True
+    CEILING_EMITTER_INTENSITY = 800.0   # 非偏振頂光強度
 
     # 四個燈的位置 (OBJ 座標)
     CEILING_LIGHT_POSITIONS = [
@@ -171,7 +303,7 @@ class Config:
     ]
 
     # 材質
-    GLASS_IOR = 1.5                 # 玻璃折射率
+    GLASS_IOR = 1.65                # 玻璃折射率（固定，正入射 R≈6.2%）
     GLASS_ROUGHNESS = 0.02          # 玻璃粗糙度
 
     # 輸出
@@ -211,8 +343,8 @@ class Config:
 
     @classmethod
     def depth_camera_position(cls) -> Tuple[float, float, float]:
-        """深度相機位置 (在立體相機中央下方)"""
-        return (cls.CAMERA_X, cls.CAMERA_Y, cls.CAMERA_Z + cls.DEPTH_CAMERA_OFFSET_Z)
+        """深度相機位置 (與左相機相同，確保視差計算正確)"""
+        return cls.left_camera_position()
 
     @classmethod
     def camera_target_for_position(cls, camera_pos: Tuple[float, float, float]) -> Tuple[float, float, float]:
@@ -254,8 +386,8 @@ class Config:
         - 偏振片角度 (0°/90°) - 物理原理
 
         隨機化：
-        - LED_INTENSITY: 偏振光強度 [2000, 4000]
-        - CEILING_EMITTER_INTENSITY: 環境光強度 [10, 25] (大幅降低，讓偏振光主導)
+        - LED_INTENSITY: 偏振光強度 [20000, 30000]
+        - CEILING_EMITTER_INTENSITY: 環境光強度 [1, 3]
         - CAMERA_X: 整體水平位置 [-120, 20]
           (左右相機、深度相機、光源一起移動)
 
@@ -266,23 +398,214 @@ class Config:
         if seed is not None:
             random.seed(seed)
 
-        # 偏振光強度 [2000, 4000] - 提高下限減少噪點
-        cls.LED_INTENSITY = random.uniform(2000, 4000)
+        # 偏振光強度 [8000, 12000]
+        cls.LED_INTENSITY = random.uniform(8000, 12000)
 
-        # 環境光強度 [10, 25] - 大幅降低，讓偏振光主導
-        cls.CEILING_EMITTER_INTENSITY = random.uniform(10, 25)
+        # 非偏振頂光強度 [600, 1000]
+        cls.CEILING_EMITTER_INTENSITY = random.uniform(600, 1000)
 
         # 整體水平位置 [-120, 20]（所有相機和光源一起移動）
         cls.CAMERA_X = random.uniform(-120, 20)
 
         print(f"  [Augment] LED={cls.LED_INTENSITY:.0f}, "
-              f"Ceiling={cls.CEILING_EMITTER_INTENSITY:.0f}, "
+              f"Ceiling={cls.CEILING_EMITTER_INTENSITY:.2f}, "
               f"CamX={cls.CAMERA_X:.1f}mm")
 
 
 def mm_to_m(mm: float) -> float:
     """毫米轉米"""
     return mm / 1000.0
+
+
+# ============================================================
+# 數據集整理功能
+# ============================================================
+
+def organize_dataset(
+    input_dir: Path,
+    output_dir: Path,
+    train_size: int = None,
+    seed: int = 42,
+    copy_mode: bool = True,
+) -> None:
+    """
+    整理渲染輸出為訓練數據集格式
+
+    只保留訓練必要的 EXR 檔案：
+    - stereo_pairs/: left_parallel.exr, right_cross.exr
+    - ground_truth/: disparity.exr
+    - masks/: glass_mask.exr
+
+    Args:
+        input_dir: 渲染輸出目錄
+        output_dir: 整理後的數據集目錄
+        train_size: 訓練集大小（剩餘為測試集），None 表示全部作為訓練集
+        seed: 隨機種子
+        copy_mode: True=複製, False=移動（預設 True）
+    """
+    import re
+    import random
+    from collections import defaultdict
+
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+
+    if not input_dir.exists():
+        print(f"[Organize] 錯誤: 輸入目錄不存在: {input_dir}")
+        return
+
+    def get_scene_name(filename: str) -> str:
+        """從檔名提取場景名稱"""
+        match = re.match(r'(scene_\d+)', filename)
+        return match.group(1) if match else None
+
+    def is_training_file(filename: str) -> tuple:
+        """判斷是否為訓練必要檔案"""
+        if filename.endswith('.exr'):
+            if '_left_parallel.exr' in filename or '_right_cross.exr' in filename:
+                return ('stereo_pairs', True)
+            if filename.endswith('_left.exr') or filename.endswith('_right.exr'):
+                return ('stereo_pairs', True)
+            if '_disparity.exr' in filename:
+                return ('disparity', True)
+            if '_glass_mask.exr' in filename:
+                return ('masks', True)
+        return (None, False)
+
+    # 解析 quality_report.md 獲取失敗場景
+    failed_scenes = set()
+    report_path = input_dir / 'quality_report.md'
+    if report_path.exists():
+        with open(report_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # 尋找表格中標記為 ✗ 的場景
+        pattern = r'\|\s*(scene_\d+)\s*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|\s*✗\s*\|'
+        matches = re.findall(pattern, content)
+        failed_scenes.update(matches)
+        # 也檢查詳細報告區塊
+        pattern2 = r'###\s+(scene_\d+)\s+✗'
+        matches2 = re.findall(pattern2, content)
+        failed_scenes.update(matches2)
+        print(f"[Organize] 從 quality_report.md 排除 {len(failed_scenes)} 個不合格場景")
+
+    # 收集所有合格場景
+    scenes = set()
+    for filepath in input_dir.iterdir():
+        if not filepath.is_file():
+            continue
+        scene_name = get_scene_name(filepath.name)
+        if scene_name and scene_name not in failed_scenes:
+            _, keep = is_training_file(filepath.name)
+            if keep:
+                scenes.add(scene_name)
+
+    all_scenes = sorted(scenes)
+    total_scenes = len(all_scenes)
+    print(f"[Organize] 合格場景數: {total_scenes}")
+
+    # 分割訓練/測試集
+    if train_size and train_size < total_scenes:
+        random.seed(seed)
+        random.shuffle(all_scenes)
+        train_scenes = set(all_scenes[:train_size])
+        test_scenes = set(all_scenes[train_size:])
+        print(f"[Organize] 訓練/測試分割: {len(train_scenes)} / {len(test_scenes)} (seed={seed})")
+    else:
+        train_scenes = set(all_scenes)
+        test_scenes = set()
+
+    # 創建輸出目錄結構
+    if test_scenes:
+        train_subdirs = {
+            'stereo_pairs': output_dir / 'train' / 'stereo_pairs',
+            'disparity': output_dir / 'train' / 'ground_truth',
+            'masks': output_dir / 'train' / 'masks',
+        }
+        test_subdirs = {
+            'stereo_pairs': output_dir / 'test' / 'stereo_pairs',
+            'disparity': output_dir / 'test' / 'ground_truth',
+            'masks': output_dir / 'test' / 'masks',
+        }
+    else:
+        train_subdirs = {
+            'stereo_pairs': output_dir / 'stereo_pairs',
+            'disparity': output_dir / 'ground_truth',
+            'masks': output_dir / 'masks',
+        }
+        test_subdirs = {}
+
+    for subdir in train_subdirs.values():
+        subdir.mkdir(parents=True, exist_ok=True)
+    for subdir in test_subdirs.values():
+        subdir.mkdir(parents=True, exist_ok=True)
+
+    # 統計
+    train_stats = defaultdict(int)
+    test_stats = defaultdict(int)
+
+    print(f"\n[Organize] 開始整理...")
+    print(f"  模式: {'複製' if copy_mode else '移動'}")
+
+    # 處理每個檔案
+    for filepath in sorted(input_dir.iterdir()):
+        if not filepath.is_file():
+            continue
+
+        filename = filepath.name
+        scene_name = get_scene_name(filename)
+        category, keep = is_training_file(filename)
+
+        if not keep:
+            continue
+
+        if scene_name in failed_scenes:
+            continue
+
+        # 決定是訓練還是測試
+        if scene_name in train_scenes:
+            target_dir = train_subdirs[category]
+            stats = train_stats
+        elif scene_name in test_scenes:
+            target_dir = test_subdirs[category]
+            stats = test_stats
+        else:
+            continue
+
+        target_path = target_dir / filename
+
+        if copy_mode:
+            shutil.copy2(filepath, target_path)
+        else:
+            shutil.move(filepath, target_path)
+
+        stats[category] += 1
+
+    # 顯示統計
+    train_total = sum(train_stats.values())
+    train_scene_count = train_stats['stereo_pairs'] // 2
+
+    print(f"\n[Organize] 完成!")
+    print(f"  訓練集: {train_scene_count} 場景, {train_total} 檔案")
+
+    if test_scenes:
+        test_total = sum(test_stats.values())
+        test_scene_count = test_stats['stereo_pairs'] // 2
+        print(f"  測試集: {test_scene_count} 場景, {test_total} 檔案")
+
+    # 複製 quality_report.md
+    if report_path.exists():
+        shutil.copy2(report_path, output_dir / 'quality_report.md')
+
+    # 輸出場景列表
+    if test_scenes:
+        with open(output_dir / 'train_scenes.txt', 'w') as f:
+            for scene in sorted(train_scenes):
+                f.write(f"{scene}\n")
+        with open(output_dir / 'test_scenes.txt', 'w') as f:
+            for scene in sorted(test_scenes):
+                f.write(f"{scene}\n")
+
+    print(f"  輸出目錄: {output_dir}")
 
 
 # ============================================================
@@ -409,8 +732,9 @@ class MTLParser:
         'concrete', 'brick', 'stone', 'plastic', 'rubber',
     ]
 
-    # 玻璃材質關鍵字（保守判斷）
-    GLASS_KEYWORDS = ['glass', 'transparent', 'acrylic']
+    # 玻璃材質精確名稱（僅匹配 Blender 導出的標準名稱）
+    # Blender furniture randomizer 使用 "Glass_Clear" 作為玻璃材質名稱
+    GLASS_EXACT_NAMES = ['glass_clear']
 
     @classmethod
     def parse(cls, mtl_path: str) -> Dict[str, Dict]:
@@ -540,18 +864,24 @@ class MTLParser:
 
     @classmethod
     def _is_glass_name(cls, name: str) -> bool:
-        """根據名稱判斷是否為玻璃材質"""
+        """
+        根據名稱判斷是否為玻璃材質
+
+        v5.1.7 修正: 使用精確匹配而非關鍵字匹配
+        - 舊邏輯: 'glass' in name -> 會誤判 'glass_table', 'glass_shelf' 等
+        - 新邏輯: name == 'Glass_Clear' (Blender 導出的標準玻璃材質名稱)
+
+        MTL 屬性 (d < 0.95, illum in [4,6,7,9]) 仍作為後備判斷
+        """
         name_lower = name.lower()
-        if any(kw in name_lower for kw in cls.NON_GLASS_KEYWORDS):
-            return False
-        return any(kw in name_lower for kw in cls.GLASS_KEYWORDS)
+        return name_lower in cls.GLASS_EXACT_NAMES
 
 
 class OBJSplitter:
     """OBJ 檔案分離器 - 按材質分離玻璃、天花板和其他幾何"""
 
     # 天花板材質關鍵字
-    CEILING_KEYWORDS = ['ceiling']
+    CEILING_KEYWORDS = ['ceiling', 'roof', 'top', 'sky', 'plafond', 'techo']
 
     def __init__(self, obj_path: str, materials: Dict[str, Dict]):
         self.obj_path = obj_path
@@ -737,14 +1067,14 @@ class SceneBuilder:
     def _create_camera_polarizer(self,
                                   camera_position: Tuple[float, float, float],
                                   camera_target: Tuple[float, float, float],
-                                  theta: float) -> Dict:
+                                  world_theta: float) -> Dict:
         """
         創建相機前方的偏振片
 
         Args:
             camera_position: 相機位置 (OBJ 座標)
             camera_target: 相機目標點 (OBJ 座標)
-            theta: 偏振片角度 (度)，0°=水平偏振，90°=垂直偏振
+            world_theta: 世界坐標偏振片角度 (度)，0°=世界水平，90°=世界垂直
         """
         # 轉換座標
         pos_m = self._transform_point(camera_position)
@@ -770,12 +1100,17 @@ class SceneBuilder:
             up=[0, 1, 0],
         ) @ mi.ScalarTransform4f.scale([half_width, half_width, 1])
 
+        # 計算世界坐標對齊的 theta
+        local_theta = compute_world_aligned_theta(
+            polarizer_pos.tolist(), tgt_m, world_theta, up=(0, 1, 0)
+        )
+
         return {
             'type': 'rectangle',
             'to_world': transform,
             'bsdf': {
                 'type': 'polarizer',
-                'theta': theta,
+                'theta': local_theta,  # 世界坐標對齊的角度
             },
         }
 
@@ -831,15 +1166,16 @@ class SceneBuilder:
         Returns:
             Tuple of (emitter_dict, polarizer_dict)
         """
-        # 光源位置：在相機上方偏前（跟隨相機 X 位置）
+        # 光源位置：Brewster 角配置
+        # LED 在相機右側，以 56° 入射角照射玻璃
         light_pos = (
-            Config.CAMERA_X,  # X: 跟隨相機中心位置
-            Config.LED_POSITION_Z,  # Y: 相機前方 (OBJ 座標)
-            Config.LED_POSITION_Y,  # Z: 頂部附近
+            Config.LED_POSITION_X,  # X: 右側位置（產生 Brewster 角）
+            Config.LED_POSITION_Z,  # Y: 深度 (OBJ 座標)
+            Config.LED_POSITION_Y,  # Z: 高度
         )
 
-        # 光源朝向：指向玻璃區域中心
-        target = Config.target_point()
+        # 光源朝向：玻璃中心（而非相機目標）
+        target = Config.LED_TARGET
 
         # 轉換座標
         pos_m = self._transform_point(light_pos)
@@ -871,6 +1207,14 @@ class SceneBuilder:
             up=[0, 1, 0],
         ) @ mi.ScalarTransform4f.scale([size_x/2 * 1.1, size_y/2 * 1.1, 1])
 
+        # 計算世界坐標對齊的偏振角度
+        # world_theta=90° 表示世界坐標中的垂直偏振
+        led_world_theta = 90.0  # 期望的世界坐標偏振角度
+        led_local_theta = compute_world_aligned_theta(
+            polarizer_pos.tolist(), tgt_m, led_world_theta, up=(0, 1, 0)
+        )
+        print(f"  [LED 偏振片] 世界角度={led_world_theta}° → 局部角度={led_local_theta:.1f}°")
+
         # 非偏振光源
         emitter_dict = {
             'type': 'rectangle',
@@ -885,12 +1229,13 @@ class SceneBuilder:
         }
 
         # 獨立偏振片（無發光，只過濾穿過的光）
+        # 使用世界坐標對齊的 theta，確保不同場景偏振角度一致
         polarizer_dict = {
             'type': 'rectangle',
             'to_world': polarizer_transform,
             'bsdf': {
                 'type': 'polarizer',
-                'theta': 0.0,  # 0° = 水平偏振
+                'theta': led_local_theta,  # 世界坐標對齊的角度
             },
         }
 
@@ -934,7 +1279,7 @@ class SceneBuilder:
         # 選擇天花板材質的 BSDF
         ceiling_bsdf = self._select_ceiling_bsdf()
 
-        # 載入天花板（普通漫反射，現在也作為發光體）
+        # 載入天花板（普通漫反射 + 微弱發光體）
         if self.has_ceiling and os.path.exists(self.ceiling_obj_path):
             print(f"[_create_meshes] 載入天花板: {self.ceiling_obj_path}")
             meshes.append(('mesh_ceiling', {
@@ -943,7 +1288,7 @@ class SceneBuilder:
                 'face_normals': False,
                 'to_world': transform,
                 'bsdf': ceiling_bsdf,
-                'emitter': { # 添加發光體屬性
+                'emitter': {
                     'type': 'area',
                     'radiance': {
                         'type': 'spectrum',
@@ -1139,11 +1484,49 @@ class StokesProcessor:
 # 場景報告生成器
 # ============================================================
 
+def warp_right_to_left(right_img: np.ndarray, disparity: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    使用視差將右圖 warp 到左視角
+
+    Args:
+        right_img: 右相機圖像
+        disparity: 視差圖 (左視角)
+
+    Returns:
+        (warped_img, valid_mask): warped 圖像和有效區域 mask
+    """
+    h, w = right_img.shape[:2]
+
+    # 建立座標網格
+    x_coords = np.arange(w, dtype=np.float32)
+    y_coords = np.arange(h, dtype=np.float32)
+    xx, yy = np.meshgrid(x_coords, y_coords)
+
+    # 右圖對應位置 = 左圖位置 - disparity
+    # 因為：左相機在左邊 (X小)，右相機在右邊 (X大)
+    # 同一 3D 點：在左圖 x 較大，在右圖 x 較小
+    # 所以 disparity = x_left - x_right > 0
+    # 要從右圖找來源：x_right = x_left - disparity
+    xx_src = (xx - disparity).astype(np.float32)
+    yy_src = yy.astype(np.float32)
+
+    # 使用 OpenCV remap 進行 warp
+    warped = cv2.remap(right_img.astype(np.float32), xx_src, yy_src,
+                       cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+    # 有效區域：視差有效且 warp 後在圖像範圍內
+    valid_mask = (disparity > 0) & (xx_src >= 0) & (xx_src < w)
+
+    return warped, valid_mask
+
+
 def generate_scene_report(scene_name: str,
                           I_parallel: np.ndarray,
                           I_cross: np.ndarray,
                           depth: np.ndarray,
+                          disparity: np.ndarray,
                           glass_mask: np.ndarray,
+                          glass_mask_left: np.ndarray,
                           dolp: np.ndarray,
                           dolp_stats: dict) -> dict:
     """
@@ -1151,7 +1534,7 @@ def generate_scene_report(scene_name: str,
 
     報告內容：
     1. DoLP 統計（全局、玻璃區域、背景區域）- 使用預先計算的對齊 DoLP
-    2. 強度比值 I∥/I⊥
+    2. 強度比值 I∥/I⊥ (使用 warp 對齊後的正確比較)
     3. 噪點水平和 SNR
     4. 深度圖統計
     5. 強度平衡檢測
@@ -1197,23 +1580,40 @@ def generate_scene_report(scene_name: str,
     # ============================================================
     valid_mask = dolp > 0
 
-    # 偏振差異（用於 SNR 計算）
-    diff = np.abs(I_parallel - I_cross)
+    # Warp I_cross 到左視角（確保比較同一 3D 點）
+    I_cross_warped, warp_valid = warp_right_to_left(I_cross, disparity)
 
-    # 強度比值
-    ratio_mask = I_cross > 0.01
+    # 偏振差異（用於 SNR 計算）- 使用 warp 後的對齊圖像
+    diff = np.abs(I_parallel - I_cross_warped)
+
+    # 強度比值（使用 warp 後的 I_cross，比較同一 3D 點）
+    ratio_mask = (I_cross_warped > 0.01) & warp_valid
     intensity_ratio = np.zeros_like(I_parallel)
     if np.any(ratio_mask):
-        intensity_ratio[ratio_mask] = I_parallel[ratio_mask] / I_cross[ratio_mask]
+        intensity_ratio[ratio_mask] = I_parallel[ratio_mask] / I_cross_warped[ratio_mask]
 
     # 玻璃區域統計（使用預先計算的對齊 DoLP）
     glass_pixel_count = int(np.sum(glass_mask > 0.5)) if glass_mask is not None else 0
+
+    # 計算玻璃區域的 warp 對齊強度比值
+    # 注意：使用 glass_mask_left（左視角 mask），因為 I_cross_warped 已 warp 到左視角
+    glass_ratio_mask = (glass_mask_left > 0.5) & ratio_mask if glass_mask_left is not None else ratio_mask
+    if np.any(glass_ratio_mask):
+        glass_intensity_ratio_mean = float(np.mean(intensity_ratio[glass_ratio_mask]))
+        glass_intensity_ratio_max = float(np.max(intensity_ratio[glass_ratio_mask]))
+    else:
+        glass_intensity_ratio_mean = 1.0
+        glass_intensity_ratio_max = 1.0
+
     glass_stats = {
         'pixel_count': glass_pixel_count,
         'pixel_ratio': float(glass_pixel_count / (Config.WIDTH * Config.HEIGHT)),
         'dolp_left': dolp_stats['glass_left'],    # 左眼玻璃 DoLP（對齊）
         'dolp_right': dolp_stats['glass_right'],  # 右眼玻璃 DoLP（對齊）
-        'dolp_mean': (dolp_stats['glass_left'] + dolp_stats['glass_right']) / 2,
+        'dolp_mean': dolp_stats['glass_left'],    # 只用左眼（更準確）
+        'intensity_ratio_mean': glass_intensity_ratio_mean,  # 玻璃區域 I∥/I⊥（warp 對齊）
+        'intensity_ratio_max': glass_intensity_ratio_max,
+        'stokes_ratio': dolp_stats.get('true_glass_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算
     }
 
     # 背景區域統計
@@ -1223,10 +1623,11 @@ def generate_scene_report(scene_name: str,
         'pixel_count': bg_pixel_count,
         'pixel_ratio': float(bg_pixel_count / (Config.WIDTH * Config.HEIGHT)),
         'dolp_mean': dolp_stats['background'],
+        'stokes_ratio': dolp_stats.get('true_bg_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算
     }
 
-    # 玻璃/背景 DoLP 比值
-    dolp_ratio = glass_stats['dolp_mean'] / (bg_stats['dolp_mean'] + 1e-6)
+    # 玻璃/背景 DoLP 比值（使用 floor 避免除以零）
+    dolp_ratio = glass_stats['dolp_mean'] / max(bg_stats['dolp_mean'], Config.DOLP_FLOOR)
 
     # 為了兼容舊代碼，創建分區域 mask（基於 DoLP 閾值）
     high_dolp_mask = (dolp > 0.1) & valid_mask
@@ -1292,8 +1693,8 @@ def generate_scene_report(scene_name: str,
     else:
         bg_dolp_std = float(np.std(dolp))
 
-    # SNR = 玻璃 DoLP / 背景 DoLP 噪點
-    snr_polarization = glass_dolp_mean / (bg_dolp_std + 1e-6)
+    # SNR = 玻璃 DoLP / 背景 DoLP 噪點（使用 floor 避免除以零）
+    snr_polarization = glass_dolp_mean / max(bg_dolp_std, Config.DOLP_FLOOR)
 
     report['noise'] = {
         'noise_std': noise_std,
@@ -1343,23 +1744,16 @@ def generate_scene_report(scene_name: str,
             }
 
     # ============================================================
-    # 5. 強度平衡檢測（背景區域的 I∥/I⊥ 比值）
+    # 5. 強度平衡檢測（背景區域的 I∥/I⊥ 比值，使用 warp 對齊）
     # ============================================================
-    if np.any(low_dolp_mask):
-        bg_parallel = I_parallel[low_dolp_mask]
-        bg_cross = I_cross[low_dolp_mask]
-
-        bg_ratio_mask = bg_cross > 0.01
-        if np.any(bg_ratio_mask):
-            bg_intensity_ratio = bg_parallel[bg_ratio_mask] / bg_cross[bg_ratio_mask]
-            bg_ratio_mean = float(np.mean(bg_intensity_ratio))
-            bg_ratio_std = float(np.std(bg_intensity_ratio))
-        else:
-            bg_ratio_mean = 1.0
-            bg_ratio_std = 0.0
-
-        bg_mean_parallel = float(np.mean(bg_parallel))
-        bg_mean_cross = float(np.mean(bg_cross))
+    # 使用 warp 後的 I_cross，確保比較同一 3D 點
+    bg_balance_mask = low_dolp_mask & warp_valid & (I_cross_warped > 0.01)
+    if np.any(bg_balance_mask):
+        bg_intensity_ratio = I_parallel[bg_balance_mask] / I_cross_warped[bg_balance_mask]
+        bg_ratio_mean = float(np.mean(bg_intensity_ratio))
+        bg_ratio_std = float(np.std(bg_intensity_ratio))
+        bg_mean_parallel = float(np.mean(I_parallel[bg_balance_mask]))
+        bg_mean_cross = float(np.mean(I_cross_warped[bg_balance_mask]))
     else:
         bg_ratio_mean = 1.0
         bg_ratio_std = 0.0
@@ -1371,7 +1765,7 @@ def generate_scene_report(scene_name: str,
         'background_ratio_std': bg_ratio_std,
         'background_mean_parallel': bg_mean_parallel,
         'background_mean_cross': bg_mean_cross,
-        'is_balanced': 0.5 <= bg_ratio_mean <= 2.0,
+        'is_balanced': 0.8 <= bg_ratio_mean <= 1.25,  # 嚴格閾值
     }
 
     # ============================================================
@@ -1416,12 +1810,12 @@ def generate_scene_report(scene_name: str,
         contrast_score = 40
     scores.append(contrast_score)
 
-    # 強度平衡分數
+    # 強度平衡分數（配合嚴格閾值 0.8~1.25）
     if report['intensity_balance']['is_balanced']:
         balance_score = 100
-    elif 0.3 <= bg_ratio_mean <= 3.0:
+    elif 0.6 <= bg_ratio_mean <= 1.5:
         balance_score = 70
-    elif 0.1 <= bg_ratio_mean <= 10.0:
+    elif 0.5 <= bg_ratio_mean <= 2.0:
         balance_score = 40
     else:
         balance_score = 20
@@ -1459,8 +1853,9 @@ def generate_scene_report(scene_name: str,
         report['warnings'].append('背景 DoLP 偏高，檢查漫反射材質設置')
     if snr_polarization < 1:
         report['warnings'].append(f'SNR 較低（{snr_polarization:.2f}），建議增加 SPP')
-    if report['polarization']['intensity_ratio']['mean'] < 2:
-        report['warnings'].append('I∥/I⊥ 比值較低，偏振效果可能不明顯')
+    glass_intensity_ratio = report['polarization']['glass_region'].get('intensity_ratio_mean', 1.0)
+    if glass_intensity_ratio < 1.5:
+        report['warnings'].append(f'I∥/I⊥ 玻璃區域比值較低 ({glass_intensity_ratio:.2f}x)，偏振效果可能不明顯')
     if 'glass_depth_validity' in report and not report['glass_depth_validity']['pass']:
         validity_rate = report['glass_depth_validity']['validity_rate'] * 100
         report['warnings'].append(f'玻璃區域深度有效率不足（{validity_rate:.1f}% < 90%），違反 Criterion 5')
@@ -1526,9 +1921,9 @@ class PIDSRenderer:
         # 建構場景
         builder = SceneBuilder(obj_path)
 
-        # 渲染左相機 (I∥) - 使用 0° 偏振片
-        print(f"\n[1/5] 渲染左相機 (I∥, θ=0°)...")
-        left_image = self._render_camera(builder, left_pos, left_target, polarizer_angle=0.0)
+        # 渲染左相機 (I∥) - 使用 90° 偏振片（交換角度修正比值方向）
+        print(f"\n[1/6] 渲染左相機 (I∥, θ=90°)...")
+        left_image = self._render_camera(builder, left_pos, left_target, polarizer_angle=90.0)
 
         # 處理 Stokes → I∥
         S0_left, S1_left, S2_left = StokesProcessor.extract_stokes(left_image)
@@ -1537,9 +1932,20 @@ class PIDSRenderer:
         del left_image
         gc.collect()
 
-        # 渲染右相機 (I⊥) - 使用 90° 偏振片
-        print(f"\n[2/5] 渲染右相機 (I⊥, θ=90°)...")
-        right_image = self._render_camera(builder, right_pos, right_target, polarizer_angle=90.0)
+        # 渲染左相機 (I⊥) - 同視角 0° 偏振片（用於計算真實 I∥/I⊥ 比值）
+        print(f"\n[2/6] 渲染左相機 (I⊥, θ=0°) - 同視角偏振測量...")
+        left_cross_image = self._render_camera(builder, left_pos, left_target, polarizer_angle=0.0)
+
+        # 處理 Stokes → I⊥_left（同視角）
+        S0_left_cross, S1_left_cross, S2_left_cross = StokesProcessor.extract_stokes(left_cross_image)
+        _, I_cross_left = StokesProcessor.compute_polarization_images(S0_left_cross, S1_left_cross, S2_left_cross)
+
+        del left_cross_image
+        gc.collect()
+
+        # 渲染右相機 (I⊥) - 使用 0° 偏振片（用於 stereo pair）
+        print(f"\n[3/6] 渲染右相機 (I⊥, θ=0°)...")
+        right_image = self._render_camera(builder, right_pos, right_target, polarizer_angle=0.0)
 
         # 處理 Stokes → I⊥
         S0_right, S1_right, S2_right = StokesProcessor.extract_stokes(right_image)
@@ -1549,12 +1955,12 @@ class PIDSRenderer:
         gc.collect()
 
         # 渲染深度圖（使用獨立深度相機，在立體相機中央下方）
-        print(f"\n[3/5] 渲染深度圖 (深度相機)...")
+        print(f"\n[4/6] 渲染深度圖 (深度相機)...")
         depth = self._render_depth(builder, depth_pos, depth_target)
 
         # 渲染玻璃 mask（從左右相機視角取聯集，確保完整覆蓋 stereo pair 中的玻璃像素）
         # 同時計算對齊的 DoLP 統計（各相機用自己的 mask，更精確）
-        print(f"\n[4/5] 渲染玻璃 mask + DoLP 統計...")
+        print(f"\n[5/6] 渲染玻璃 mask + DoLP 統計...")
 
         # 左相機 glass mask + DoLP
         glass_mask_left = self._render_glass_mask(builder, left_pos, left_target, "左")
@@ -1568,25 +1974,61 @@ class PIDSRenderer:
         glass_dolp_right = float(dolp_right[glass_mask_right > 0.5].mean()) if np.any(glass_mask_right > 0.5) else 0.0
         print(f"  [DoLP 右眼玻璃] {glass_dolp_right:.4f}")
 
-        # 聯集 mask
+        # 聯集 mask (用於訓練 - 確保覆蓋所有玻璃)
         glass_mask = ((glass_mask_left > 0.5) | (glass_mask_right > 0.5)).astype(np.float32)
         print(f"  [Glass Mask (聯集)] 玻璃像素: {int(np.sum(glass_mask))} ({np.sum(glass_mask)/(Config.WIDTH*Config.HEIGHT)*100:.1f}%)")
+
+        # 交集 mask (用於評估 - 更嚴格，只保留確定是玻璃的像素)
+        glass_mask_strict = ((glass_mask_left > 0.5) & (glass_mask_right > 0.5)).astype(np.float32)
+        print(f"  [Glass Mask (交集)] 玻璃像素: {int(np.sum(glass_mask_strict))} ({np.sum(glass_mask_strict)/(Config.WIDTH*Config.HEIGHT)*100:.1f}%)")
 
         # 背景 DoLP（用左眼，排除玻璃區域）
         background_mask = glass_mask < 0.5
         background_dolp = float(dolp_left[background_mask].mean()) if np.any(background_mask) else 0.0
         print(f"  [DoLP 背景] {background_dolp:.4f}")
-        print(f"  [DoLP 玻璃/背景比] {(glass_dolp_left + glass_dolp_right) / 2 / (background_dolp + 1e-6):.2f}x")
+        print(f"  [DoLP 玻璃/背景比] {(glass_dolp_left + glass_dolp_right) / 2 / max(background_dolp, Config.DOLP_FLOOR):.2f}x")
+
+        # 計算同視角偏振比值（用左相機的 Stokes 參數，無需第二次渲染）
+        # 根據 Malus 定律：I(θ) = 0.5 * (S0 + S1*cos(2θ) + S2*sin(2θ))
+        # I(0°) = 0.5 * (S0 + S1), I(90°) = 0.5 * (S0 - S1)
+        I_0deg = 0.5 * (S0_left + S1_left)  # 0° 偏振片強度
+        I_90deg = 0.5 * (S0_left - S1_left)  # 90° 偏振片強度
+        I_0deg = np.maximum(I_0deg, 0)
+        I_90deg = np.maximum(I_90deg, 0)
+
+        # 計算同視角偏振比值
+
+        valid_pol_mask = (I_0deg > 0.01) & (I_90deg > 0.01)
+        true_pol_ratio = np.ones_like(I_0deg)
+        if np.any(valid_pol_mask):
+            true_pol_ratio[valid_pol_mask] = I_90deg[valid_pol_mask] / I_0deg[valid_pol_mask]
+
+        # 玻璃區域真實偏振比值
+        glass_pol_mask = (glass_mask_left > 0.5) & valid_pol_mask
+        if np.any(glass_pol_mask):
+            true_glass_ratio = float(np.mean(true_pol_ratio[glass_pol_mask]))
+        else:
+            true_glass_ratio = 1.0
+
+        # 背景區域真實偏振比值
+        bg_pol_mask = (glass_mask_left < 0.5) & valid_pol_mask
+        if np.any(bg_pol_mask):
+            true_bg_ratio = float(np.mean(true_pol_ratio[bg_pol_mask]))
+        else:
+            true_bg_ratio = 1.0
+
 
         # 打包 DoLP 統計供報告使用
         dolp_stats = {
             'glass_left': glass_dolp_left,
             'glass_right': glass_dolp_right,
             'background': background_dolp,
+            'true_glass_ratio': true_glass_ratio,
+            'true_bg_ratio': true_bg_ratio,
         }
 
         # 計算視差
-        print(f"\n[5/5] 計算視差...")
+        print(f"\n[6/6] 計算視差...")
         disparity = self._compute_disparity(depth)
 
         # 保存結果
@@ -1594,7 +2036,8 @@ class PIDSRenderer:
         self._save_outputs(
             output_dir, scene_name,
             I_parallel, I_cross, depth, disparity,
-            dolp_left, glass_mask, dolp_stats
+            dolp_left, glass_mask, glass_mask_left, dolp_stats,
+            glass_mask_strict
         )
 
         # 清理臨時檔案
@@ -1679,8 +2122,14 @@ class PIDSRenderer:
 
         return depth.astype(np.float32)
 
-    def _compute_disparity(self, depth: np.ndarray) -> np.ndarray:
-        """計算視差圖"""
+    def _compute_disparity(self, ray_depth: np.ndarray) -> np.ndarray:
+        """
+        計算視差圖
+
+        重要：Mitsuba 的 depth AOV 輸出的是 ray depth (歐幾里得距離)，
+        但視差公式需要 Z depth (垂直距離)。必須先轉換：
+        Z = ray_depth * cos(angle)
+        """
         # 焦距 (pixels)
         fov_rad = np.radians(Config.FOV)
         focal_px = (Config.WIDTH / 2) / np.tan(fov_rad / 2)
@@ -1688,10 +2137,37 @@ class PIDSRenderer:
         # 基線 (m)
         baseline_m = mm_to_m(Config.BASELINE)
 
-        # 視差 = baseline * focal / depth
-        disparity = np.zeros_like(depth)
-        valid = depth > 0
-        disparity[valid] = (baseline_m * focal_px) / depth[valid]
+        # ============ Ray depth → Z depth 轉換 ============
+        # 計算每個像素的 cos(angle)
+        # cos(angle) = focal / sqrt(focal^2 + dx^2 + dy^2)
+        # 其中 dx = x - cx, dy = y - cy
+        cx, cy = Config.WIDTH / 2, Config.HEIGHT / 2
+        y_coords, x_coords = np.meshgrid(
+            np.arange(Config.HEIGHT),
+            np.arange(Config.WIDTH),
+            indexing='ij'
+        )
+        dx = x_coords - cx
+        dy = y_coords - cy
+
+        # cos(angle) for each pixel
+        cos_angle = focal_px / np.sqrt(focal_px**2 + dx**2 + dy**2)
+
+        # 轉換為 Z depth (垂直距離)
+        z_depth = ray_depth * cos_angle
+
+        # 計算中央和邊角的 cos 差異 (debug info)
+        cos_center = cos_angle[Config.HEIGHT//2, Config.WIDTH//2]
+        cos_corner = cos_angle[0, 0]
+        print(f"  [深度轉換] cos(center): {cos_center:.4f}, cos(corner): {cos_corner:.4f}")
+        print(f"  [深度轉換] ray_depth 範圍: [{ray_depth[ray_depth>0].min():.4f}, {ray_depth[ray_depth>0].max():.4f}] m")
+        print(f"  [深度轉換] z_depth 範圍: [{z_depth[z_depth>0].min():.4f}, {z_depth[z_depth>0].max():.4f}] m")
+
+        # ============ 計算視差 ============
+        # 視差 = baseline * focal / Z
+        disparity = np.zeros_like(z_depth)
+        valid = z_depth > 0
+        disparity[valid] = (baseline_m * focal_px) / z_depth[valid]
 
         print(f"  [視差] 焦距: {focal_px:.1f} px")
         print(f"  [視差] 範圍: [{disparity[valid].min():.1f}, {disparity[valid].max():.1f}] px")
@@ -1800,7 +2276,9 @@ class PIDSRenderer:
                       disparity: np.ndarray,
                       dolp: np.ndarray,
                       glass_mask: np.ndarray,
-                      dolp_stats: dict):
+                      glass_mask_left: np.ndarray,
+                      dolp_stats: dict,
+                      glass_mask_strict: np.ndarray = None):
         """保存所有輸出（不含 right_parallel）"""
         # EXR 檔案
         self._save_exr(I_parallel, f"{output_dir}/{scene_name}_left_parallel.exr")
@@ -1810,10 +2288,12 @@ class PIDSRenderer:
 
         # 預覽 PNG
         if Config.SAVE_PREVIEW:
-            # 使用統一範圍，方便比較
-            vmax = max(I_parallel.max(), I_cross.max())
-            self._save_png_fixed(I_parallel, f"{output_dir}/{scene_name}_left_parallel.png", 0, vmax)
-            self._save_png_fixed(I_cross, f"{output_dir}/{scene_name}_right_cross.png", 0, vmax)
+            # 使用 percentile 統一範圍，避免極端值影響
+            combined = np.concatenate([I_parallel.flatten(), I_cross.flatten()])
+            vmax = np.percentile(combined, 99.5)  # 99.5 percentile 避免極端亮點
+            vmin = 0
+            self._save_png_fixed(I_parallel, f"{output_dir}/{scene_name}_left_parallel.png", vmin, vmax)
+            self._save_png_fixed(I_cross, f"{output_dir}/{scene_name}_right_cross.png", vmin, vmax)
 
             # 偏振差異圖
             diff = np.abs(I_parallel - I_cross)
@@ -1832,43 +2312,45 @@ class PIDSRenderer:
             cv2.imwrite(f"{output_dir}/{scene_name}_DoLP_color.png", dolp_colored)
             print(f"  [DoLP] 平均: {dolp.mean():.4f}, 最大: {dolp.max():.4f}")
 
-        # 保存玻璃 mask
+        # 保存玻璃 mask (聯集 - 用於訓練)
         if glass_mask is not None:
             self._save_exr(glass_mask, f"{output_dir}/{scene_name}_glass_mask.exr")
             self._save_png(glass_mask, f"{output_dir}/{scene_name}_glass_mask.png")
 
-        # 生成品質報告（使用預先計算的 DoLP 統計）
+        # 保存嚴格玻璃 mask (交集 - 用於評估)
+        if glass_mask_strict is not None:
+            self._save_exr(glass_mask_strict, f"{output_dir}/{scene_name}_glass_mask_strict.exr")
+            self._save_png(glass_mask_strict, f"{output_dir}/{scene_name}_glass_mask_strict.png")
+
+        # 生成品質報告（使用預先計算的 DoLP 統計 + warp 對齊的強度比值）
         print(f"\n[Report] 生成品質報告...")
-        report = generate_scene_report(scene_name, I_parallel, I_cross, depth, glass_mask, dolp, dolp_stats)
+        report = generate_scene_report(scene_name, I_parallel, I_cross, depth, disparity, glass_mask, glass_mask_left, dolp, dolp_stats)
 
         report_path = f"{output_dir}/{scene_name}_report.json"
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
 
-        # 印出關鍵指標
-        print(f"    DoLP (全局): mean={report['polarization']['global']['dolp_mean']:.4f}, p95={report['polarization']['global']['dolp_p95']:.4f}")
-        print(f"    DoLP (左眼玻璃): {report['polarization']['glass_region']['dolp_left']:.4f}")
-        print(f"    DoLP (右眼玻璃): {report['polarization']['glass_region']['dolp_right']:.4f}")
-        print(f"    DoLP (背景): {report['polarization']['background_region']['dolp_mean']:.4f}")
-        print(f"    DoLP 玻璃/背景比: {report['polarization']['dolp_ratio']:.2f}x")
-        print(f"    I∥/I⊥ 比值: {report['polarization']['intensity_ratio']['mean']:.2f}x")
-        print(f"    背景平衡: {report['intensity_balance']['background_ratio_mean']:.2f}x " +
-              ("✓ 平衡" if report['intensity_balance']['is_balanced'] else "⚠️ 不平衡"))
-        print(f"    SNR: {report['noise']['snr_polarization']:.2f}")
+        # 印出關鍵指標（精簡版）
+        true_glass_ratio = dolp_stats.get('true_glass_ratio', 1.0)
+        true_bg_ratio = dolp_stats.get('true_bg_ratio', 1.0)
+        bg_balance = report['intensity_balance']['background_ratio_mean']
+        snr = report['noise']['snr_polarization']
 
-        # 玻璃區域深度有效率 (Criterion 5)
+        print(f"    ┌─────────────────────────────────────────┐")
+        print(f"    │ 玻璃 I(90°)/I(0°)  : {true_glass_ratio:6.3f}x            │")
+        print(f"    │ 背景 I(90°)/I(0°)  : {true_bg_ratio:6.3f}x            │")
+        print(f"    │ 背景平衡 (warp)    : {bg_balance:6.2f}x " + ("✓" if report['intensity_balance']['is_balanced'] else "⚠") + "           │")
+        print(f"    │ SNR               : {snr:6.2f}              │")
+
+        # 玻璃深度有效率
         if 'glass_depth_validity' in report:
             gdv = report['glass_depth_validity']
             validity_pct = gdv['validity_rate'] * 100
-            pass_str = "✓ 通過" if gdv['pass'] else "✗ 未通過"
-            print(f"    玻璃深度有效率: {validity_pct:.1f}% {pass_str} (Criterion 5: >90%)")
+            pass_mark = "✓" if gdv['pass'] else "✗"
+            print(f"    │ 玻璃深度有效率    : {validity_pct:5.1f}% {pass_mark}           │")
 
-        print(f"    品質: {report['quality']['level']} ({report['quality']['score']}分)")
-
-        if report['warnings']:
-            print(f"    ⚠️ 警告:")
-            for w in report['warnings']:
-                print(f"       - {w}")
+        print(f"    │ 品質分數          : {report['quality']['score']:3d} ({report['quality']['level']})       │")
+        print(f"    └─────────────────────────────────────────┘")
 
         # 參數 JSON
         params = {
@@ -1908,24 +2390,32 @@ class PIDSRenderer:
         bitmap.write(path)
         print(f"    -> {path}")
 
-    def _save_png(self, image: np.ndarray, path: str):
-        """保存 PNG (自動範圍)"""
+    def _save_png(self, image: np.ndarray, path: str, gamma: float = 2.2):
+        """保存 PNG (自動範圍 + gamma correction)"""
         if image.ndim == 3:
             image = image[:, :, 0]
-        vmin, vmax = image.min(), image.max()
+        # 使用 percentile 避免極端值影響
+        vmin = np.percentile(image, 1)
+        vmax = np.percentile(image, 99.5)
         if vmax > vmin:
-            normalized = ((image - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            normalized = np.clip((image - vmin) / (vmax - vmin), 0, 1)
+            # Gamma correction (線性 → sRGB)
+            normalized = np.power(normalized, 1.0 / gamma)
+            normalized = (normalized * 255).astype(np.uint8)
         else:
             normalized = np.zeros_like(image, dtype=np.uint8)
         cv2.imwrite(path, normalized)
 
-    def _save_png_fixed(self, image: np.ndarray, path: str, vmin: float, vmax: float):
-        """保存 PNG (固定範圍)"""
+    def _save_png_fixed(self, image: np.ndarray, path: str, vmin: float, vmax: float, gamma: float = 2.2):
+        """保存 PNG (固定範圍 + gamma correction)"""
         if image.ndim == 3:
             image = image[:, :, 0]
         clipped = np.clip(image, vmin, vmax)
         if vmax > vmin:
-            normalized = ((clipped - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+            normalized = (clipped - vmin) / (vmax - vmin)
+            # Gamma correction (線性 → sRGB)
+            normalized = np.power(normalized, 1.0 / gamma)
+            normalized = (normalized * 255).astype(np.uint8)
         else:
             normalized = np.zeros_like(image, dtype=np.uint8)
         cv2.imwrite(path, normalized)
@@ -1995,27 +2485,418 @@ def run_single_gpu_wrapper(args_tuple):
             traceback.print_exc()
 
 
+def rerender_glass_masks(params_dir: str, obj_dir: str, output_dir: str,
+                         max_scenes: Optional[int] = None,
+                         scene_list_path: Optional[str] = None,
+                         skip: int = 0):
+    """
+    重新渲染 glass mask（使用修正後的玻璃檢測邏輯）
+
+    v5.1.7 新增功能：
+    - 讀取已渲染場景的 params.json 獲取相機位置
+    - 使用修正後的 _is_glass_name()（精確匹配 Glass_Clear）
+    - 重新渲染 glass mask 並覆蓋原檔案
+    - 支持場景列表文件篩選
+
+    Args:
+        params_dir: 包含 *_params.json 的目錄
+        obj_dir: OBJ 場景目錄
+        output_dir: 輸出目錄（通常與 params_dir 相同）
+        max_scenes: 最大處理場景數
+        scene_list_path: 場景列表文件路徑（每行一個場景名）
+        skip: 跳過前 N 個場景（用於多 GPU 並行）
+    """
+    import json
+
+    # 初始化 Mitsuba
+    global mi
+    import mitsuba as mi_module
+    mi_module.set_variant('cuda_ad_rgb')
+    mi = mi_module
+
+    print("=" * 70)
+    print("[PIDS Renderer v5.1.7 - Glass Mask Re-render Mode]")
+    print("=" * 70)
+    print(f"  修正: _is_glass_name() 現使用精確匹配 'Glass_Clear'")
+    print(f"  Params 目錄: {params_dir}")
+    print(f"  OBJ 目錄: {obj_dir}")
+    print(f"  輸出目錄: {output_dir}")
+    if scene_list_path:
+        print(f"  場景列表: {scene_list_path}")
+    print("=" * 70)
+
+    # 讀取場景列表（如果提供）
+    allowed_scenes = None
+    if scene_list_path:
+        if not os.path.exists(scene_list_path):
+            print(f"[錯誤] 找不到場景列表文件: {scene_list_path}")
+            return
+        with open(scene_list_path, 'r', encoding='utf-8') as f:
+            # 每行一個場景名，忽略空行和註釋
+            allowed_scenes = set()
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    # 支持 "scene_0001" 或 "scene_0001.obj" 格式
+                    scene_name = line.replace('.obj', '').replace('_params.json', '')
+                    allowed_scenes.add(scene_name)
+        print(f"  場景列表包含 {len(allowed_scenes)} 個場景")
+
+    # 找到所有 params.json
+    params_files = sorted(Path(params_dir).glob('*_params.json'))
+
+    # 根據場景列表篩選
+    if allowed_scenes:
+        params_files = [p for p in params_files
+                       if p.stem.replace('_params', '') in allowed_scenes]
+        print(f"  篩選後: {len(params_files)} 個場景")
+
+    # 跳過前 N 個場景（用於多 GPU 並行）
+    if skip > 0:
+        params_files = params_files[skip:]
+        print(f"  跳過前 {skip} 個，剩餘: {len(params_files)} 個場景")
+
+    if max_scenes:
+        params_files = params_files[:max_scenes]
+
+    print(f"\n待處理: {len(params_files)} 個場景")
+
+    os.makedirs(output_dir, exist_ok=True)
+    success_count = 0
+    fail_count = 0
+
+    for i, params_path in enumerate(params_files):
+        print(f"\n[進度] {i+1}/{len(params_files)}: {params_path.name}")
+
+        try:
+            # 讀取 params.json
+            with open(params_path, 'r') as f:
+                params = json.load(f)
+
+            scene_name = params['scene_name']
+            camera = params['camera']
+            left_pos = tuple(camera['left_position'])
+            right_pos = tuple(camera['right_position'])
+            target = tuple(camera['target'])
+
+            # 找到對應的 OBJ
+            obj_path = Path(obj_dir) / f"{scene_name}.obj"
+            if not obj_path.exists():
+                print(f"  [跳過] 找不到 OBJ: {obj_path}")
+                fail_count += 1
+                continue
+
+            # 建立 SceneBuilder（使用修正後的玻璃檢測）
+            builder = SceneBuilder(str(obj_path))
+
+            if not builder.has_glass:
+                print(f"  [跳過] 場景無玻璃材質")
+                # 仍然保存空 mask
+                empty_mask = np.zeros((Config.HEIGHT, Config.WIDTH), dtype=np.float32)
+                _save_mask(empty_mask, output_dir, scene_name)
+                builder.cleanup()
+                success_count += 1
+                continue
+
+            # 渲染左右視角的 glass mask
+            glass_mask_left = _render_glass_mask_standalone(builder, left_pos, target, "左")
+            glass_mask_right = _render_glass_mask_standalone(builder, right_pos, target, "右")
+
+            # 聯集 (用於訓練)
+            glass_mask = ((glass_mask_left > 0.5) | (glass_mask_right > 0.5)).astype(np.float32)
+            pixel_count = int(np.sum(glass_mask))
+            print(f"  [Glass Mask (聯集)] 玻璃像素: {pixel_count} ({pixel_count/(Config.WIDTH*Config.HEIGHT)*100:.1f}%)")
+
+            # 保存
+            _save_mask(glass_mask, output_dir, scene_name)
+            builder.cleanup()
+            success_count += 1
+
+        except Exception as e:
+            print(f"  [錯誤] {e}")
+            import traceback
+            traceback.print_exc()
+            fail_count += 1
+
+    print("\n" + "=" * 70)
+    print(f"[完成] 成功: {success_count}, 失敗: {fail_count}")
+    print("=" * 70)
+
+
+def rerender_strict_masks(params_dir: str, obj_dir: str, output_dir: str,
+                          max_scenes: Optional[int] = None,
+                          scene_list_path: Optional[str] = None,
+                          skip: int = 0):
+    """
+    重新渲染嚴格 glass mask（交集）
+
+    與 rerender_glass_masks 類似，但輸出交集 mask (glass_mask_strict.exr)
+    用於評估時更精確的 Glass EPE 計算
+
+    Args:
+        params_dir: 包含 *_params.json 的目錄
+        obj_dir: OBJ 場景目錄
+        output_dir: 輸出目錄
+        max_scenes: 最大處理場景數
+        scene_list_path: 場景列表文件路徑（每行一個場景名）
+        skip: 跳過前 N 個場景
+    """
+    import json
+
+    # 初始化 Mitsuba
+    global mi
+    import mitsuba as mi_module
+    mi_module.set_variant('cuda_ad_rgb')
+    mi = mi_module
+
+    print("=" * 70)
+    print("[PIDS Renderer - Strict Glass Mask Re-render Mode]")
+    print("=" * 70)
+    print(f"  輸出: glass_mask_strict.exr (左右視角交集)")
+    print(f"  Params 目錄: {params_dir}")
+    print(f"  OBJ 目錄: {obj_dir}")
+    print(f"  輸出目錄: {output_dir}")
+    if scene_list_path:
+        print(f"  場景列表: {scene_list_path}")
+    print("=" * 70)
+
+    # 讀取場景列表（如果提供）
+    allowed_scenes = None
+    if scene_list_path:
+        if not os.path.exists(scene_list_path):
+            print(f"[錯誤] 找不到場景列表文件: {scene_list_path}")
+            return
+        with open(scene_list_path, 'r', encoding='utf-8') as f:
+            allowed_scenes = set()
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    scene_name = line.replace('.obj', '').replace('_params.json', '')
+                    allowed_scenes.add(scene_name)
+        print(f"  場景列表包含 {len(allowed_scenes)} 個場景")
+
+    # 找到所有 params.json
+    params_files = sorted(Path(params_dir).glob('*_params.json'))
+
+    # 根據場景列表篩選
+    if allowed_scenes:
+        params_files = [p for p in params_files
+                       if p.stem.replace('_params', '') in allowed_scenes]
+        print(f"  篩選後: {len(params_files)} 個場景")
+
+    if skip > 0:
+        params_files = params_files[skip:]
+        print(f"  跳過前 {skip} 個，剩餘: {len(params_files)} 個場景")
+
+    if max_scenes:
+        params_files = params_files[:max_scenes]
+
+    print(f"\n待處理: {len(params_files)} 個場景")
+
+    os.makedirs(output_dir, exist_ok=True)
+    success_count = 0
+    fail_count = 0
+
+    for i, params_path in enumerate(params_files):
+        scene_name = params_path.stem.replace('_params', '')
+        print(f"\n[{i+1}/{len(params_files)}] {scene_name}")
+
+        try:
+            # 讀取 params.json
+            with open(params_path, 'r', encoding='utf-8') as f:
+                params = json.load(f)
+
+            # 獲取相機位置
+            left_pos = tuple(params['camera']['left_position'])
+            right_pos = tuple(params['camera']['right_position'])
+            target = tuple(params['camera']['target'])
+
+            # 找到對應的 OBJ
+            obj_path = Path(obj_dir) / f"{scene_name}.obj"
+            if not obj_path.exists():
+                print(f"  [跳過] 找不到 OBJ: {obj_path}")
+                fail_count += 1
+                continue
+
+            # 建立 SceneBuilder
+            builder = SceneBuilder(str(obj_path))
+
+            if not builder.has_glass:
+                print(f"  [跳過] 場景無玻璃材質")
+                empty_mask = np.zeros((Config.HEIGHT, Config.WIDTH), dtype=np.float32)
+                _save_mask(empty_mask, output_dir, scene_name, suffix="_strict")
+                builder.cleanup()
+                success_count += 1
+                continue
+
+            # 渲染左右視角的 glass mask
+            glass_mask_left = _render_glass_mask_standalone(builder, left_pos, target, "左")
+            glass_mask_right = _render_glass_mask_standalone(builder, right_pos, target, "右")
+
+            # 交集 (嚴格 mask)
+            glass_mask_strict = ((glass_mask_left > 0.5) & (glass_mask_right > 0.5)).astype(np.float32)
+            pixel_count = int(np.sum(glass_mask_strict))
+            print(f"  [Glass Mask (交集)] 玻璃像素: {pixel_count} ({pixel_count/(Config.WIDTH*Config.HEIGHT)*100:.1f}%)")
+
+            # 保存
+            _save_mask(glass_mask_strict, output_dir, scene_name, suffix="_strict")
+            builder.cleanup()
+            success_count += 1
+
+        except Exception as e:
+            print(f"  [錯誤] {e}")
+            import traceback
+            traceback.print_exc()
+            fail_count += 1
+
+    print("\n" + "=" * 70)
+    print(f"[完成] 成功: {success_count}, 失敗: {fail_count}")
+    print("=" * 70)
+
+
+def _render_glass_mask_standalone(builder: 'SceneBuilder',
+                                   position: Tuple[float, float, float],
+                                   target: Tuple[float, float, float],
+                                   camera_name: str = "") -> np.ndarray:
+    """
+    獨立渲染 glass mask 函數（用於 rerender 模式）
+
+    與 PIDSRenderer._render_glass_mask 相同邏輯
+    """
+    if not builder.has_glass:
+        return np.zeros((Config.HEIGHT, Config.WIDTH), dtype=np.float32)
+
+    # 座標轉換
+    pos_m = builder._transform_point(position)
+    tgt_m = builder._transform_point(target)
+
+    # 基本變換矩陣
+    transform = mi.ScalarTransform4f.scale([0.001, 0.001, 0.001]) @ \
+                mi.ScalarTransform4f.rotate([1, 0, 0], -90)
+
+    scene_dict = {
+        'type': 'scene',
+        'integrator': {
+            'type': 'aov',
+            'aovs': 'dd.y:depth',
+            'integrator': {
+                'type': 'path',
+                'max_depth': 2,
+            },
+        },
+        'sensor': {
+            'type': 'perspective',
+            'fov': Config.FOV,
+            'fov_axis': 'x',
+            'to_world': mi.ScalarTransform4f.look_at(
+                origin=pos_m,
+                target=tgt_m,
+                up=[0, 1, 0],
+            ),
+            'film': {
+                'type': 'hdrfilm',
+                'width': Config.WIDTH,
+                'height': Config.HEIGHT,
+                'pixel_format': 'luminance',
+                'component_format': 'float32',
+            },
+            'sampler': {
+                'type': 'independent',
+                'sample_count': 4,
+            },
+        },
+        'glass_mesh': {
+            'type': 'obj',
+            'filename': builder.glass_obj_path,
+            'face_normals': False,
+            'to_world': transform,
+            'bsdf': MaterialFactory.diffuse(0.5),
+        },
+    }
+
+    scene = mi.load_dict(scene_dict)
+    image = mi.render(scene, spp=4)
+    img_np = np.array(image)
+
+    # 提取深度通道
+    if img_np.ndim == 3 and img_np.shape[2] >= 2:
+        depth_channel = img_np[:, :, 1]
+    elif img_np.ndim == 3:
+        depth_channel = img_np[:, :, 0]
+    else:
+        depth_channel = img_np
+
+    # 二值化
+    glass_mask = (depth_channel > 0).astype(np.float32)
+
+    pixel_count = int(np.sum(glass_mask))
+    pixel_ratio = pixel_count / (Config.WIDTH * Config.HEIGHT)
+    cam_label = f" ({camera_name})" if camera_name else ""
+    print(f"  [Glass Mask{cam_label}] 玻璃像素: {pixel_count} ({pixel_ratio*100:.1f}%)")
+
+    return glass_mask
+
+
+def _save_mask(glass_mask: np.ndarray, output_dir: str, scene_name: str, suffix: str = ""):
+    """保存 glass mask（EXR + PNG）
+
+    Args:
+        glass_mask: mask 陣列
+        output_dir: 輸出目錄
+        scene_name: 場景名稱
+        suffix: 檔名後綴，例如 "_strict" 會變成 glass_mask_strict.exr
+    """
+    # EXR
+    exr_path = f"{output_dir}/{scene_name}_glass_mask{suffix}.exr"
+    bitmap = mi.Bitmap(glass_mask.astype(np.float32))
+    bitmap.write(exr_path)
+    print(f"    -> {exr_path}")
+
+    # PNG
+    png_path = f"{output_dir}/{scene_name}_glass_mask{suffix}.png"
+    img_uint8 = (glass_mask * 255).astype(np.uint8)
+    cv2.imwrite(png_path, img_uint8)
+    print(f"    -> {png_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='PIDS Stage 1 Renderer v4.0.0 (Textured)',
+        description='PIDS Stage 1 Renderer v5.1.8 (Strict Glass Mask)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例:
   # 單一場景
   python pids_renderer_textured.py --scene scene_0001.obj --output ./output
 
-  # 批次渲染
-  python pids_renderer_textured.py --input_dir ./scenes --output ./output --max_scenes 100
+  # 批次渲染 + QA（模擬場景跳過 C1）
+  python pids_renderer_textured.py --input_dir ./scenes --output ./output --max_scenes 100 --skip-c1
 
   # 多 GPU 並行
-  python pids_renderer_textured.py --input_dir ./scenes --output ./output --num_gpus 4
+  python pids_renderer_textured.py --input_dir ./scenes --output ./output --num_gpus 4 --skip-c1
+
+  # 重新渲染 glass mask（聯集，使用已有的 params.json）
+  python pids_renderer_textured.py --rerender-mask ./output --obj-dir ./scenes --output ./output
+
+  # 只重新渲染篩選過的場景（使用場景列表文件）
+  python pids_renderer_textured.py --rerender-mask ./output --obj-dir ./scenes --output ./output --scene-list train_scenes.txt
+
+  # 重新渲染嚴格 glass mask（交集，用於評估）
+  python pids_renderer_textured.py --rerender-strict-mask ./output --obj-dir ./scenes --output ./output --scene-list train_scenes.txt
         """
     )
 
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument('--scene', type=str, help='單一 OBJ 場景')
     input_group.add_argument('--input_dir', type=str, help='OBJ 場景目錄')
+    input_group.add_argument('--rerender-mask', type=str, dest='rerender_mask',
+                            help='重新渲染 glass mask（聯集）：指定包含 *_params.json 的目錄')
+    input_group.add_argument('--rerender-strict-mask', type=str, dest='rerender_strict_mask',
+                            help='重新渲染嚴格 glass mask（交集）：指定包含 *_params.json 的目錄')
 
+    parser.add_argument('--obj-dir', type=str, dest='obj_dir',
+                        help='OBJ 場景目錄（與 --rerender-mask/--rerender-strict-mask 搭配使用）')
+    parser.add_argument('--scene-list', type=str, dest='scene_list',
+                        help='場景列表文件（每行一個場景名，如 train_scenes.txt）')
     parser.add_argument('--output', type=str, required=True, help='輸出目錄')
     parser.add_argument('--spp', type=int, default=Config.SPP, help=f'SPP (預設: {Config.SPP})')
     parser.add_argument('--max_scenes', type=int, default=None, help='最大場景數')
@@ -2025,7 +2906,39 @@ def main():
     parser.add_argument('--skip-qa', action='store_true', help='跳過 QA 驗證')
     parser.add_argument('--skip-c1', action='store_true', help='QA 時跳過 C1 (Geometric Consistency) - 模擬場景建議使用')
 
+    # 數據集整理參數
+    parser.add_argument('--organize', type=str, default=None,
+                        help='整理後的數據集輸出目錄（啟用數據集整理）')
+    parser.add_argument('--train_size', type=int, default=None,
+                        help='訓練集場景數（剩餘為測試集）')
+    parser.add_argument('--organize_seed', type=int, default=42,
+                        help='訓練/測試分割隨機種子（預設: 42）')
+    parser.add_argument('--organize_move', action='store_true',
+                        help='使用移動模式（預設: 複製）')
+
     args = parser.parse_args()
+
+    # ============================================================
+    # 特殊模式：重新渲染 glass mask
+    # ============================================================
+    if args.rerender_mask:
+        if not args.obj_dir:
+            print("[錯誤] --rerender-mask 需要搭配 --obj-dir 指定 OBJ 場景目錄")
+            return
+        rerender_glass_masks(args.rerender_mask, args.obj_dir, args.output,
+                            args.max_scenes, args.scene_list, args.skip)
+        return
+
+    # ============================================================
+    # 特殊模式：重新渲染嚴格 glass mask（交集）
+    # ============================================================
+    if args.rerender_strict_mask:
+        if not args.obj_dir:
+            print("[錯誤] --rerender-strict-mask 需要搭配 --obj-dir 指定 OBJ 場景目錄")
+            return
+        rerender_strict_masks(args.rerender_strict_mask, args.obj_dir, args.output,
+                             args.max_scenes, args.scene_list, args.skip)
+        return
 
     # 更新配置
     Config.SPP = args.spp
@@ -2033,7 +2946,7 @@ def main():
 
     # 收集場景
     if args.scene:
-        scenes = [args.scene]
+        scenes = [Path(args.scene)]  # 轉換為 Path 物件
     else:
         # 排除渲染過程中產生的分離 OBJ 文件 (_glass, _ceiling, _other)
         all_objs = sorted(Path(args.input_dir).glob('*.obj'))
@@ -2045,9 +2958,9 @@ def main():
         if args.max_scenes:
             scenes = scenes[:args.max_scenes]
 
-    print(f"[PIDS Renderer v4.0.0 - Textured]")
-    print(f"  紋理支持: 已啟用 (map_Kd)")
-    print(f"  隨機化: LED強度, 環境光, 相機X位置")
+    print(f"[PIDS Renderer v5.1.8 - Strict Glass Mask]")
+    print(f"  偏振修正: 天花板光降低, DoLP用Stokes, GlassMask聯集+交集")
+    print(f"  QA 整合: {'跳過' if args.skip_qa else '啟用'} (C1: {'跳過' if args.skip_c1 else '啟用'})")
     print(f"  GPU 數量: {args.num_gpus}")
     if args.skip > 0:
         print(f"  跳過前 {args.skip} 個場景")
@@ -2084,9 +2997,12 @@ def main():
                 '--spp', str(args.spp),
                 '--skip', str(args.skip + start_idx),
                 '--max_scenes', str(num_scenes),
+                '--skip-qa',  # 子進程跳過 QA，由主進程統一執行
             ]
             if args.no_preview:
                 cmd.append('--no_preview')
+            if args.skip_c1:
+                cmd.append('--skip-c1')
 
             # 設置環境變量並啟動子進程
             env = os.environ.copy()
@@ -2131,39 +3047,42 @@ def main():
 
         try:
             QV = lazy_import_qa()
-            validator = QV(args.output, skip_c1=args.skip_c1)
-            count = validator.load_reports()
-
-            if count > 0:
-                results = validator.validate_all(check_exr=True)
-
-                # 生成 Markdown 報告
-                md_report = validator.generate_markdown_report(results)
-                report_path = Path(args.output) / 'quality_report.md'
-                with open(report_path, 'w', encoding='utf-8') as f:
-                    f.write(md_report)
-
-                # 印出摘要
-                summary = results['summary']
-                pass_rate = summary['passed'] / summary['total'] * 100 if summary['total'] > 0 else 0
-
-                print(f"\n[QA 結果]")
-                print(f"  總場景: {summary['total']}")
-                print(f"  通過: {summary['passed']}")
-                print(f"  未通過: {summary['failed']}")
-                print(f"  通過率: {pass_rate:.1f}%")
-                print(f"  報告: {report_path}")
-
-                # 輸出未通過場景列表
-                failed_scenes = [item['scene_name'] for item in results['results'] if not item['passed']]
-                if failed_scenes:
-                    failed_path = Path(args.output) / 'failed_scenes.txt'
-                    with open(failed_path, 'w', encoding='utf-8') as f:
-                        for scene in failed_scenes:
-                            f.write(f"{scene}\n")
-                    print(f"  未通過列表: {failed_path}")
+            if QV is None:
+                print(f"[QA] 模組不可用，跳過驗證")
             else:
-                print(f"[QA] 找不到報告檔案，跳過驗證")
+                validator = QV(args.output, skip_c1=args.skip_c1)
+                count = validator.load_reports()
+
+                if count > 0:
+                    results = validator.validate_all(check_exr=True)
+
+                    # 生成 Markdown 報告
+                    md_report = validator.generate_markdown_report(results)
+                    report_path = Path(args.output) / 'quality_report.md'
+                    with open(report_path, 'w', encoding='utf-8') as f:
+                        f.write(md_report)
+
+                    # 印出摘要
+                    summary = results['summary']
+                    pass_rate = summary['passed'] / summary['total'] * 100 if summary['total'] > 0 else 0
+
+                    print(f"\n[QA 結果]")
+                    print(f"  總場景: {summary['total']}")
+                    print(f"  通過: {summary['passed']}")
+                    print(f"  未通過: {summary['failed']}")
+                    print(f"  通過率: {pass_rate:.1f}%")
+                    print(f"  報告: {report_path}")
+
+                    # 輸出未通過場景列表
+                    failed_scenes = [item['scene_name'] for item in results['results'] if not item['passed']]
+                    if failed_scenes:
+                        failed_path = Path(args.output) / 'failed_scenes.txt'
+                        with open(failed_path, 'w', encoding='utf-8') as f:
+                            for scene in failed_scenes:
+                                f.write(f"{scene}\n")
+                        print(f"  未通過列表: {failed_path}")
+                else:
+                    print(f"[QA] 找不到報告檔案，跳過驗證")
 
         except Exception as e:
             print(f"[QA 錯誤] {e}")
@@ -2171,6 +3090,22 @@ def main():
             traceback.print_exc()
     else:
         print(f"\n[QA] 已跳過（使用 --skip-qa）")
+
+    # ============================================================
+    # 自動整理數據集
+    # ============================================================
+    if args.organize:
+        print(f"\n{'='*60}")
+        print(f"[Organize] 開始整理數據集...")
+        print(f"{'='*60}")
+
+        organize_dataset(
+            input_dir=Path(args.output),
+            output_dir=Path(args.organize),
+            train_size=args.train_size,
+            seed=args.organize_seed,
+            copy_mode=not args.organize_move,
+        )
 
     total_elapsed = time.time() - start_time
     print(f"\n[完成] 總耗時: {total_elapsed/60:.1f} 分鐘")
@@ -2191,11 +3126,17 @@ if __name__ == '__main__':
                 parser = argparse.ArgumentParser()
                 parser.add_argument('--input_dir', type=str, required=True)
                 parser.add_argument('--output', type=str, required=True)
-                parser.add_argument('--spp', type=int, default=8192)
+                parser.add_argument('--spp', type=int, default=1024)
                 parser.add_argument('--max_scenes', type=int, default=None)
                 parser.add_argument('--skip', type=int, default=0)
                 parser.add_argument('--no_preview', action='store_true')
                 parser.add_argument('--num_gpus', type=int, default=1)
+                parser.add_argument('--skip-qa', action='store_true')
+                parser.add_argument('--skip-c1', action='store_true')
+                parser.add_argument('--organize', type=str, default=None)
+                parser.add_argument('--train_size', type=int, default=None)
+                parser.add_argument('--organize_seed', type=int, default=42)
+                parser.add_argument('--organize_move', action='store_true')
                 args = parser.parse_args()
 
                 # 收集場景
@@ -2207,9 +3148,10 @@ if __name__ == '__main__':
                 if args.max_scenes:
                     scenes = scenes[:args.max_scenes]
 
-                print(f"[PIDS Renderer v4.0.0 - Multi-GPU Launcher (Textured)]")
+                print(f"[PIDS Renderer v5.1.8 - Multi-GPU Launcher]")
                 print(f"  GPU 數量: {num_gpus}")
                 print(f"  待渲染: {len(scenes)} 個場景")
+                print(f"  QA: {'跳過' if '--skip-qa' in sys.argv else '啟用'}")
 
                 # 均勻分配場景到各 GPU（餘數分散給前幾個 GPU）
                 total_scenes = len(scenes)
@@ -2239,6 +3181,10 @@ if __name__ == '__main__':
                     ]
                     if args.no_preview:
                         cmd.append('--no_preview')
+                    if args.skip_qa:
+                        cmd.append('--skip-qa')
+                    if args.skip_c1:
+                        cmd.append('--skip-c1')
 
                     env = os.environ.copy()
                     env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
@@ -2249,13 +3195,27 @@ if __name__ == '__main__':
                     print(f"[啟動] GPU {gpu_id} PID: {p.pid}")
 
                 print(f"\n等待所有 GPU 完成...")
-                print(f"監控: tail -f gpu0.log gpu1.log gpu2.log gpu3.log")
+                print(f"監控: tail -f gpu0.log gpu1.log ...")
 
                 for p, log_file in processes:
                     p.wait()
                     log_file.close()
 
                 print(f"\n所有 GPU 渲染完成！")
+
+                # 整理數據集（只在主進程執行一次）
+                if args.organize:
+                    print(f"\n{'='*60}")
+                    print(f"[Organize] 開始整理數據集...")
+                    print(f"{'='*60}")
+                    organize_dataset(
+                        input_dir=Path(args.output),
+                        output_dir=Path(args.organize),
+                        train_size=args.train_size,
+                        seed=args.organize_seed,
+                        copy_mode=not args.organize_move,
+                    )
+
                 sys.exit(0)
 
     # 單 GPU 模式或子進程

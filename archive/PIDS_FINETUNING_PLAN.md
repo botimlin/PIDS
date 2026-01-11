@@ -1,8 +1,8 @@
 # PIDS Finetuning 完整規劃文檔
 
-**版本**: 1.6
+**版本**: 1.7
 **日期**: 2026-01-04
-**狀態**: 實驗 #16 突破性進展
+**狀態**: 實驗 #16 完成 - Glass EPE 21.82 px (-48.3%)
 
 ---
 
@@ -547,7 +547,7 @@ GPU: H200
 | 穩定性 | ±0.5 px 震盪 |
 | 收斂 | ~30K steps |
 
-### 14.3 實驗 #14: Baseline 無偏振版 (2026-01-02 ~ 01-03) 完成
+### 14.3 實驗 #14: Baseline 無偏振版 (2026-01-02 ~ 01-03) ✅ 完成
 
 ```
 GPU: H200
@@ -665,13 +665,13 @@ python train_pids.py \
 | num_steps | 50K |
 
 **強化策略總結:**
-1. ResidualBlock2D - 改善梯度流動
-2. SpatialAttention - 自動學習關注玻璃
-3. 更大 pol_dim (64) - 更強表達能力
-4. 更低 threshold (0.05) - 更敏感偏振檢測
-5. Polarization-aware Loss - 偏振區域額外加權
-6. 更高 glass_weight (5.0) - 玻璃區域更重要
-7. **視差對齊修正** - 使用 GT disparity warp 右圖後再計算 pol_diff
+1. ✅ ResidualBlock2D - 改善梯度流動
+2. ✅ SpatialAttention - 自動學習關注玻璃
+3. ✅ 更大 pol_dim (64) - 更強表達能力
+4. ✅ 更低 threshold (0.05) - 更敏感偏振檢測
+5. ✅ Polarization-aware Loss - 偏振區域額外加權
+6. ✅ 更高 glass_weight (5.0) - 玻璃區域更重要
+7. ✅ **視差對齊修正** - 使用 GT disparity warp 右圖後再計算 pol_diff
 
 ### 14.7 視差對齊修正 (2026-01-03)
 
@@ -713,7 +713,7 @@ Focal: ~765px (計算值)
 - 訓練時: 使用 GT disparity 對齊，計算純偏振差異
 - 推論時: 無 GT disparity，退化為原始方式 (可接受)
 
-### 14.8 實驗 #15: Dual-Stream 首次嘗試 (2026-01-04) BUG
+### 14.8 實驗 #15: Dual-Stream 首次嘗試 (2026-01-04) ❌ BUG
 
 **配置:**
 ```
@@ -735,8 +735,8 @@ disp_preds = [-f for f in flow_preds]  # f shape: (B, 2, H, W)
 
 # 問題: flow 輸出是 (B, 2, H, W)，但 disp_gt 是 (B, 1, H, W)
 # 導致 loss 計算時 broadcasting 錯誤：
-# - Channel 0: |disp - disp_gt| (correct)
-# - Channel 1: |0 - disp_gt| = disp_gt (wrong - GT itself added to loss!)
+# - Channel 0: |disp - disp_gt| ✓ 正確
+# - Channel 1: |0 - disp_gt| = disp_gt ❌ GT 本身被加進 loss！
 
 # 修正後
 disp_preds = [-f[:, :1] for f in flow_preds]  # 只取第一個 channel
@@ -744,7 +744,7 @@ disp_preds = [-f[:, :1] for f in flow_preds]  # 只取第一個 channel
 
 **結論:** 實驗 #15 數據無效，需重新訓練
 
-### 14.9 實驗 #16: Dual-Stream 修正版 (2026-01-04) 突破性進展
+### 14.9 實驗 #16: Dual-Stream 修正版 (2026-01-04) ✅ 完成
 
 **修正內容:**
 - 修正 flow→disparity 維度 bug (`[-f[:, :1] for f in flow_preds]`)
@@ -773,39 +773,46 @@ nohup python train_pids.py \
     > train_exp16.log 2>&1 &
 ```
 
-**訓練進度 (32.5K / 50K = 65%):**
+**最終結果 (50K steps):**
 
 ```
-Glass EPE 趨勢:
+Glass EPE 完整趨勢:
 ├─  0.5K steps:  86.61 px (起始)
 ├─  5K steps:    45.09 px
 ├─ 10K steps:    44.57 px
-├─ 14.5K steps:  34.89 px (跌破 35!)
 ├─ 16K steps:    33.77 px
 ├─ 19K steps:    30.25 px (跌破 30!)
-├─ 20.5K steps:  28.17 px
 ├─ 23.5K steps:  26.34 px
-├─ 27K steps:    26.09 px
 ├─ 28K steps:    25.40 px
-├─ 31K steps:    24.38 px
-├─ 31.5K steps:  24.08 px ← 目前最佳
-└─ 32.5K steps:  24.68 px (訓練中)
+├─ 36K steps:    22.76 px
+├─ 42K steps:    21.53 px ← 最佳
+├─ 45K steps:    21.67 px
+└─ 50K steps:    21.82 px (最終)
+
+Val Loss 趨勢:
+├─  0.5K steps:  690.34 (起始)
+├─ 16K steps:    253.00
+├─ 27K steps:    193.15
+├─ 36K steps:    173.86
+├─ 42K steps:    162.61
+├─ 45.5K steps:  161.59
+└─ 50K steps:    160.51 (最終，持續下降)
 ```
 
-**對比歷史實驗:**
-| 實驗 | Glass EPE | vs Exp#16 改善 |
-|------|-----------|----------------|
-| Exp #13 (PIDS 隱式) | 39.20 px | **-38.6%** |
-| Exp #14 (Baseline 無偏振) | 42.17 px | **-42.9%** |
-| **Exp #16 (Dual-Stream)** | **24.08 px** | 目前最佳 |
+**最終對比:**
+| 實驗 | Glass EPE | Val Loss | vs Baseline |
+|------|-----------|----------|-------------|
+| Exp #14 (Baseline 無偏振) | 42.17 px | 248.59 | --- |
+| Exp #13 (PIDS 隱式) | 39.20 px | ~250 | -7.0% |
+| **Exp #16 (Dual-Stream)** | **21.82 px** | **160.51** | **-48.3%** |
 
-**關鍵發現:**
-1. 維度 bug 修正後，Dual-Stream 架構效果顯著
-2. 從 39.20 -> 24.08 px，**改善近 40%**
-3. 訓練穩定，持續下降
-4. 還有 35% 訓練空間，最終結果可能更好
+**關鍵成果:**
+1. ✅ Glass EPE: 42.17 → 21.82 px (**-48.3% 改善**)
+2. ✅ Val Loss: 248.59 → 160.51 (**-35.4% 改善**)
+3. ✅ 訓練穩定，後期收斂在 21.5-22.5 px
+4. ✅ 顯式偏振編碼 vs 隱式: 改善從 7% 提升到 48%
 
-**狀態:** 訓練中 (65%)，預計完成後更新最終數據
+**結論:** Dual-Stream 架構成功證明顯式偏振特徵編碼的價值
 
 ---
 
@@ -820,3 +827,4 @@ Glass EPE 趨勢:
 | 1.4 | 2026-01-03 | 視差對齊修正：使用 GT disparity warp 右圖後計算純偏振差異 |
 | 1.5 | 2026-01-04 | 修正 flow→disparity 維度 bug、實驗 #15/#16 記錄 |
 | 1.6 | 2026-01-04 | 實驗 #16 突破性進展：Glass EPE 24.08 px (改善 40%) |
+| 1.7 | 2026-01-04 | 實驗 #16 完成：Glass EPE 21.82 px, Val Loss 160.51 (-48.3%) |

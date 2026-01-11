@@ -286,10 +286,12 @@ def main():
                         help='Path to dataset directory')
     parser.add_argument('--output_dir', type=str, default='./evaluation_results',
                         help='Output directory for results')
-    parser.add_argument('--split', type=str, default='val', choices=['train', 'val', 'all'],
-                        help='Which split to evaluate')
+    parser.add_argument('--split', type=str, default='val', choices=['train', 'val', 'test', 'all'],
+                        help='Which split to evaluate (test uses dedicated test/ folder)')
     parser.add_argument('--val_split', type=float, default=0.2,
                         help='Validation split ratio')
+    parser.add_argument('--test_dir', type=str, default=None,
+                        help='Direct path to test directory (overrides --data_dir for test)')
     parser.add_argument('--iters', type=int, default=20,
                         help='Number of inference iterations')
     parser.add_argument('--save_vis', action='store_true',
@@ -315,29 +317,52 @@ def main():
     model, checkpoint_info = load_model(args.checkpoint, device)
 
     # 載入數據集
-    print(f"\nLoading dataset from: {args.data_dir}")
+    if args.split == 'test':
+        # 使用獨立的 test 資料夾
+        if args.test_dir:
+            test_data_dir = args.test_dir
+        else:
+            # 自動偵測 test/ 子目錄
+            test_path = Path(args.data_dir) / 'test'
+            if test_path.exists():
+                test_data_dir = str(test_path)
+            else:
+                test_data_dir = args.data_dir
 
-    # 獲取所有樣本
-    dataset = PIDSDataset(
-        data_dir=args.data_dir,
-        split='val' if args.split == 'val' else 'train',
-        val_split=args.val_split,
-        augment=False,  # 評估時不做增強
-    )
+        print(f"\nLoading TEST dataset from: {test_data_dir}")
 
-    if args.split == 'all':
-        # 合併 train 和 val
-        train_dataset = PIDSDataset(
-            data_dir=args.data_dir,
-            split='train',
-            val_split=args.val_split,
+        # 對於 test set，使用 split='train' 讀取整個目錄，不做分割
+        dataset = PIDSDataset(
+            data_dir=test_data_dir,
+            split='train',  # 讀取全部
+            val_split=0.0,   # 不分割
             augment=False,
         )
-        # 簡單合併 indices
-        all_indices = list(range(len(train_dataset))) + [i + len(train_dataset) for i in range(len(dataset))]
-        print(f"Evaluating ALL data: {len(train_dataset)} train + {len(dataset)} val = {len(all_indices)} samples")
+        print(f"Evaluating TEST set: {len(dataset)} samples")
     else:
-        print(f"Evaluating {args.split} split: {len(dataset)} samples")
+        print(f"\nLoading dataset from: {args.data_dir}")
+
+        # 獲取所有樣本
+        dataset = PIDSDataset(
+            data_dir=args.data_dir,
+            split='val' if args.split == 'val' else 'train',
+            val_split=args.val_split,
+            augment=False,  # 評估時不做增強
+        )
+
+        if args.split == 'all':
+            # 合併 train 和 val
+            train_dataset = PIDSDataset(
+                data_dir=args.data_dir,
+                split='train',
+                val_split=args.val_split,
+                augment=False,
+            )
+            # 簡單合併 indices
+            all_indices = list(range(len(train_dataset))) + [i + len(train_dataset) for i in range(len(dataset))]
+            print(f"Evaluating ALL data: {len(train_dataset)} train + {len(dataset)} val = {len(all_indices)} samples")
+        else:
+            print(f"Evaluating {args.split} split: {len(dataset)} samples")
 
     # 限制樣本數
     num_samples = len(dataset)
