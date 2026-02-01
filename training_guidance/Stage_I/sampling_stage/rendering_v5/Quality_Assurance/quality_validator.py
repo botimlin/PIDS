@@ -1,7 +1,7 @@
 """
 PIDS Quality Validator v1.6.0
 =============================
-v1.6.0: C3 支持雙向對比 (ratio < 0.83 或 > 1.2 都通過)
+v1.6.0: C3 支持雙向對比 (ratio < 0.96 或 > 1.04 都通過)
 v1.5.0: 改用玻璃比值 (I∥/I⊥ warp對齊) 取代 DoLP 作為 C3 標準
 
 批次驗證渲染結果，生成 Markdown 品質報告。
@@ -10,7 +10,7 @@ v1.5.0: 改用玻璃比值 (I∥/I⊥ warp對齊) 取代 DoLP 作為 C3 標準
 1. Geometric Consistency (vertical disparity < 1px) - 從 EXR 計算
    [注意] 對於模擬場景，可使用 --skip-c1 跳過此檢查（相機位置已精確定義）
 2. Background Photometric Consistency (|I∥ - I⊥| ≈ 0) - 從 JSON 讀取
-3. Polarization Signal Validity (雙向對比: ratio < 0.83 或 > 1.2) - 從 JSON 讀取
+3. Polarization Signal Validity (雙向對比: ratio < 0.96 或 > 1.04) - 從 JSON 讀取
 4. Ground Truth Alignment (< 1px misalignment) - 需要額外計算
 5. Depth Validity Rate (>90% in glass region) - 從 JSON 讀取
 
@@ -293,7 +293,7 @@ class QualityValidator:
         'glass_ratio': {
             'name': 'Glass Polarization Ratio',
             'criterion': 3,
-            'threshold': (0.96, 1.04),  # 玻璃區域 I∥/I⊥ 比值：<0.96 或 >1.04 都通過
+            'threshold': (0.96, 1.04),  # 玻璃區域 I∥/I⊥ 比值：<0.96 或 >1.04 都通過 (4% 最小偏差)
             'description': '玻璃比值 I∥/I⊥ < 0.96x 或 > 1.04x（雙向對比）',
         },
         'ground_truth_alignment': {
@@ -328,8 +328,8 @@ class QualityValidator:
         report_files = sorted(self.input_dir.glob('*_report.json'))
 
         # 過濾掉 OBJ 分割產生的中間檔案 (_glass, _other)
-        # 只保留符合 scene_XXXX_report.json 格式的檔案
-        valid_pattern = re.compile(r'^scene_\d{4}_report\.json$')
+        # 只保留符合 scene_XXXX_report.json 格式的檔案 (支持 4 位或更多位數)
+        valid_pattern = re.compile(r'^scene_\d+_report\.json$')
 
         skipped_count = 0
         for report_file in report_files:
@@ -431,7 +431,7 @@ class QualityValidator:
         if 'polarization' in report and 'glass_region' in report['polarization']:
             glass_ratio = report['polarization']['glass_region'].get('intensity_ratio_mean', 1.0)
             threshold_low, threshold_high = self.CRITERIA['glass_ratio']['threshold']
-            # 通過條件：ratio < 0.83 (反向對比) 或 ratio > 1.2 (正向對比)
+            # 通過條件：ratio < 0.96 (反向對比) 或 ratio > 1.04 (正向對比)
             results['glass_ratio'] = glass_ratio <= threshold_low or glass_ratio >= threshold_high
             direction = "正向" if glass_ratio >= threshold_high else ("反向" if glass_ratio <= threshold_low else "無")
             print(f"    [C3] 玻璃比值={glass_ratio:.2f}x, 閾值=(<{threshold_low} 或 >{threshold_high}), 方向={direction}, pass={results['glass_ratio']}")

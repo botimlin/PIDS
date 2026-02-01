@@ -819,9 +819,10 @@ class MTLParser:
         - 絕對路徑
         - 相對於 MTL 檔案的相對路徑
         - 只有檔名（在 MTL 同目錄搜尋）
+        - MTL 選項參數 (-s, -o, -blendu 等)
 
         Args:
-            tex_path: MTL 中的紋理路徑
+            tex_path: MTL 中的紋理路徑 (可能包含 -s 1.5 1.5 1 等選項)
             mtl_dir: MTL 檔案所在目錄
 
         Returns:
@@ -829,6 +830,23 @@ class MTLParser:
         """
         # 移除可能的引號
         tex_path = tex_path.strip('"\'')
+
+        # 處理 MTL 選項參數 (例如: -s 1.5 1.5 1 texture.jpg)
+        # 常見選項: -s (scale), -o (offset), -blendu, -blendv, -mm, -t, -texres
+        # 這些選項後面跟著數值，最後才是實際的紋理檔名
+        parts = tex_path.split()
+        if parts and parts[0].startswith('-'):
+            # 有選項參數，需要找到實際的檔名
+            # 策略：從後往前找第一個看起來像檔名的部分
+            for i in range(len(parts) - 1, -1, -1):
+                part = parts[i]
+                # 檔名通常有副檔名且不以 - 開頭
+                if not part.startswith('-') and '.' in part:
+                    tex_path = part
+                    break
+            else:
+                # 找不到有效檔名，用最後一個部分
+                tex_path = parts[-1]
 
         # 處理 Windows/Unix 路徑分隔符
         tex_path = tex_path.replace('\\', '/')
@@ -1484,6 +1502,9 @@ class StokesProcessor:
 # 場景報告生成器
 # ============================================================
 
+# [DEPRECATED] warp_right_to_left 已不再用於 QA 檢查
+# QA 現在使用同視角的 stokes_ratio（從左相機 Stokes 參數直接計算）
+# 此函數保留僅為向後兼容，未來版本可能移除
 def warp_right_to_left(right_img: np.ndarray, disparity: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     使用視差將右圖 warp 到左視角
@@ -1611,9 +1632,11 @@ def generate_scene_report(scene_name: str,
         'dolp_left': dolp_stats['glass_left'],    # 左眼玻璃 DoLP（對齊）
         'dolp_right': dolp_stats['glass_right'],  # 右眼玻璃 DoLP（對齊）
         'dolp_mean': dolp_stats['glass_left'],    # 只用左眼（更準確）
-        'intensity_ratio_mean': glass_intensity_ratio_mean,  # 玻璃區域 I∥/I⊥（warp 對齊）
+        # [DEPRECATED] intensity_ratio_mean 使用跨視角 warp，已不建議用於 QA
+        'intensity_ratio_mean': glass_intensity_ratio_mean,  # 玻璃區域 I∥/I⊥（warp 對齊）- 已棄用
         'intensity_ratio_max': glass_intensity_ratio_max,
-        'stokes_ratio': dolp_stats.get('true_glass_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算
+        # [推薦] stokes_ratio: 同視角計算，QA 應使用此字段
+        'stokes_ratio': dolp_stats.get('true_glass_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算 ← QA 用這個
     }
 
     # 背景區域統計
@@ -1623,7 +1646,8 @@ def generate_scene_report(scene_name: str,
         'pixel_count': bg_pixel_count,
         'pixel_ratio': float(bg_pixel_count / (Config.WIDTH * Config.HEIGHT)),
         'dolp_mean': dolp_stats['background'],
-        'stokes_ratio': dolp_stats.get('true_bg_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算
+        # [推薦] stokes_ratio: 同視角計算，QA 應使用此字段
+        'stokes_ratio': dolp_stats.get('true_bg_ratio', 1.0),  # I(90°)/I(0°) 從 Stokes 計算 ← QA 用這個
     }
 
     # 玻璃/背景 DoLP 比值（使用 floor 避免除以零）
@@ -1744,9 +1768,11 @@ def generate_scene_report(scene_name: str,
             }
 
     # ============================================================
-    # 5. 強度平衡檢測（背景區域的 I∥/I⊥ 比值，使用 warp 對齊）
+    # 5. 強度平衡檢測（背景區域的 I∥/I⊥ 比值）
     # ============================================================
-    # 使用 warp 後的 I_cross，確保比較同一 3D 點
+    # [DEPRECATED] 此區塊使用跨視角 warp 計算，已不建議用於 QA
+    # QA 應改用 background_region.stokes_ratio（同視角計算）
+    # 此區塊保留僅為向後兼容
     bg_balance_mask = low_dolp_mask & warp_valid & (I_cross_warped > 0.01)
     if np.any(bg_balance_mask):
         bg_intensity_ratio = I_parallel[bg_balance_mask] / I_cross_warped[bg_balance_mask]
@@ -1760,12 +1786,14 @@ def generate_scene_report(scene_name: str,
         bg_mean_parallel = 0.0
         bg_mean_cross = 0.0
 
+    # [DEPRECATED] intensity_balance 使用跨視角 warp，已不建議用於 QA
+    # QA 應改用 polarization.background_region.stokes_ratio
     report['intensity_balance'] = {
-        'background_ratio_mean': bg_ratio_mean,
+        'background_ratio_mean': bg_ratio_mean,  # 已棄用，改用 stokes_ratio
         'background_ratio_std': bg_ratio_std,
         'background_mean_parallel': bg_mean_parallel,
         'background_mean_cross': bg_mean_cross,
-        'is_balanced': 0.8 <= bg_ratio_mean <= 1.25,  # 嚴格閾值
+        'is_balanced': 0.8 <= bg_ratio_mean <= 1.25,  # 已棄用
     }
 
     # ============================================================
