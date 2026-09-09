@@ -1,4 +1,4 @@
-# PIDS: Physics-Informed Deep Stereo
+📄 *Submitted to IEEE Robotics and Automation Letters (RA-L) / ICRA 2025*# PIDS: Physics-Informed Deep Stereo
 
 ### Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Detection
 
@@ -7,7 +7,6 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
 
 **Po-Ting Lin**
-📄 *Submitted to IEEE Robotics and Automation Letters (RA-L) / ICRA 2025*
 
 > Copyright (c) 2025-2026 Po-Ting Lin
 > Released under the MIT License (see [LICENSE](LICENSE) file).
