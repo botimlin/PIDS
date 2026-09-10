@@ -251,18 +251,7 @@ python evaluate.py \
 
 ---
 
-## 📈 Results
 
-*Quantitative results will be added upon paper acceptance.*
-
-| Method | Training Samples | EPE (px) ↓ | RMSE (mm) ↓ |
-|--------|-----------------|------------|-------------|
-| ClearGrasp | 50,000+ | - | - |
-| TransCG | 50,000+ | - | - |
-| ASGrasp | 20,000+ | - | - |
-| **PIDS (Ours)** | **< 500** | **TBD** | **TBD** |
-
----
 
 
 ## 📜 License
@@ -286,7 +275,8 @@ This project is released under the [MIT License](LICENSE).
 For questions or collaboration inquiries:
 
 - **Author**: Po-Ting Lin
-- **Email**: [your-email@example.com]
+- **Email**: [botimlinlin@gmail.com]
+- **WebSite**: potinglin.org
 - **Issues**: Please use [GitHub Issues](https://github.com/your-username/PIDS/issues)
 
 ---
