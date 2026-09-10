@@ -264,21 +264,6 @@ python evaluate.py \
 
 ---
 
-## 🔬 Citation
-
-If you use this code, hardware design, or method in your research, please cite:
-
-```bibtex
-@article{lin2025pids,
-  title={Physics-Informed Deep Stereo: Active Asymmetric Polarization for 
-         Data-Efficient Transparent Obstacle Detection},
-  author={Lin, Po-Ting},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
-  year={2025}
-}
-```
-
----
 
 ## 📜 License
 
