@@ -1,239 +1,520 @@
-### Active Asymmetric Polarization for Data-Efficient Transparent Obstacle Detection
+# PIDS — Physics-Informed Deep Stereo
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
+[![Status](https://img.shields.io/badge/Status-Concluded-lightgrey.svg)](#project-status)
 
 **Po-Ting Lin**
 
-> Copyright (c) 2025-2026 Po-Ting Lin
-> Released under the MIT License (see [LICENSE](LICENSE) file).
+> Copyright (c) 2025–2026 Po-Ting Lin  
+> Released under the MIT License. See [LICENSE](LICENSE).
 
 ---
 
-## 📖 Abstract
+## Project Status
 
-Transparent obstacles—such as glass doors, acrylic panels, and plastic shields—pose a fundamental challenge for autonomous navigation. Traditional RGB-D, LiDAR, and depth-completion approaches often fail to reconstruct reliable geometry due to light transmission and specular reflection.
+> **CONCLUDED — February 26, 2026**
 
-We propose **PIDS**, a **physics-informed deep stereo framework** that leverages **active asymmetric polarization**. By capturing cross-polarized stereo pairs (I∥ and I⊥), we convert the transparency detection problem into a robust photometric discrepancy learning task.
+PIDS was a research investigation into whether **active asymmetric polarization**
+could make stereo vision capable of recovering the surface depth of transparent
+obstacles such as glass doors and acrylic panels.
 
+After approximately **five months**, **45+ training experiments**, and multiple
+generations of model and rendering architectures, the project reached a negative
+but important conclusion:
 
----
+> **Polarized stereo vision does not provide a reliable path to measuring the
+> surface depth of transparent objects through conventional stereo
+> correspondence.**
 
-## ✨ Key Features
+The limiting factor is not primarily model capacity, optimization, dataset size,
+or network architecture. It is the underlying optics.
 
-| Feature | Description |
-|---------|-------------|
-| 🔬 **Physics-Informed** | Exploits polarization difference (I∥ ≫ I⊥) to detect "invisible" transparent obstacles |
-| 📊 **Data-Efficient** | Achieves high accuracy with minimal training samples (tens instead of thousands) |
-| 🔌 **Plug-and-Play** | Compatible with standard deep stereo backbones (e.g., RAFT-Stereo) without architectural changes |
-| ⚡ **Real-Time Capable** | Supports both cloud inference and local LAN deployment for <100ms latency |
-
----
-
-## 🔧 System Architecture
-
-### Why It Works
-
-| Region | Parallel View (I∥) | Cross View (I⊥) | Result |
-|--------|-------------------|-----------------|--------|
-| **Diffuse Background** | α·(Id + Ib) | α·(Id + Ib) | I∥ ≈ I⊥ → Standard stereo matching works |
-| **Transparent Surface** | α·(Id + Ib) + Is | α·(Id + Ib) | I∥ ≫ I⊥ → Strong discriminative cue |
+This repository is therefore maintained as a **research archive**, containing
+hardware designs, calibration tools, polarized rendering code, stereo-model
+experiments, data-quality infrastructure, and engineering knowledge produced
+during the investigation.
 
 ---
 
-## 🛠️ Hardware Requirements
+## Abstract
 
-### Bill of Materials (BOM)
+Transparent objects violate several assumptions on which conventional stereo
+vision depends.
 
-| Component | Specification | Qty | Notes |
-|-----------|--------------|-----|-------|
-| **Compute Unit** | Raspberry Pi 5 (8GB) | 1 | Pi 4B compatible; Pi 5 recommended |
-| **Camera** | Raspberry Pi Global Shutter Camera | 2 | Sony IMX296 sensor, essential for sync |
-| **Lens** | 6mm CS-Mount Lens | 2 | Must be identical focal lengths |
-| **Polarizer** | Linear Polarization Film | 3 | High extinction ratio recommended |
-| **Light Source** | High-intensity LED Panel | 1 | Mount near cameras |
-| **Inference Server** | NVIDIA GPU (RTX 3060+ / Tesla P4) | 1 | For running RAFT-Stereo |
-| **Mounting** | 3D Printed Bracket | 1 | See `appendix/Duo_Cam_Bracket.step` |
+For opaque Lambertian surfaces, corresponding points observed by the left and
+right cameras have approximately consistent appearance. Transparent surfaces
+behave differently: reflection, refraction, internal reflection, and
+view-dependent specular components cause the two cameras to observe different
+photometric patterns.
 
-### Optical Setup Procedure
+PIDS investigated whether **active asymmetric polarization** could introduce a
+useful physical cue:
 
-1. **Light Source (0°)**: Attach a linear polarizer to the LED panel. This defines the **reference angle**.
+- the illumination is linearly polarized;
+- the left camera observes a parallel-polarized view (`I∥`);
+- the right camera observes a cross-polarized view (`I⊥`);
+- transparent surfaces can exhibit a measurable difference between the two
+  polarization states.
 
-2. **Left Camera (0° - Parallel View)**: Rotate the lens polarizer to **maximize** brightness when viewing the light's reflection on a mirror.
-   - *Physics*: Captures strong specular highlights on glass
+The original hypothesis was that this difference could help a deep stereo
+network recover transparent-surface disparity.
 
-3. **Right Camera (90° - Cross View)**: Rotate the lens polarizer to **minimize** brightness when viewing the reflection.
-   - *Physics*: Suppresses highlights, seeing "through" the reflection
+Experiments showed, however, that polarization changes the **relative intensity
+of reflected components** without creating stable, geometrically corresponding
+features between the stereo views.
 
-4. **Hardware Sync**: Connect the **XVS** pins of both Global Shutter cameras. Configure one as `Master` and the other as `Slave`.
+As a result, the polarization signal did not form a sharp matchable peak in
+correlation space, while conventional stereo tended to recover the
+**background depth behind the transparent surface rather than the depth of the
+surface itself**.
+
+The project was therefore concluded as a negative-result study.
 
 ---
 
-## 💻 Installation
+## Research Question
 
-### Prerequisites
+The original goal was:
 
-- Python 3.8+
-- CUDA 11.7+ (for GPU inference)
-- Docker & Docker Compose (for Raspberry Pi deployment)
+> Can a synchronized stereo camera pair using active asymmetric polarization
+> recover the depth of transparent obstacles?
 
-### Clone Repository
+The optical configuration was:
 
-```bash
-git clone https://github.com/your-username/PIDS.git
-cd PIDS
+| Component | Polarization |
+|---|---:|
+| Active illumination | 0° |
+| Left camera | 0° / Parallel (`I∥`) |
+| Right camera | 90° / Cross (`I⊥`) |
+
+The intended cue was:
+
+| Region | Parallel View (`I∥`) | Cross View (`I⊥`) |
+|---|---|---|
+| Diffuse / background region | Similar appearance | Similar appearance |
+| Polarization-sensitive reflection | Stronger reflected component | Suppressed reflected component |
+
+This difference is physically observable.
+
+The critical question was whether it was also **stereo-matchable**.
+
+Experiments showed that these are not the same thing.
+
+---
+
+## Why the Approach Fails
+
+### 1. Transparent surfaces violate stereo photometric consistency
+
+Conventional stereo matching assumes that the same physical point produces
+sufficiently similar observable features in the left and right images.
+
+For transparent surfaces, this assumption breaks down.
+
+The observed image may contain combinations of:
+
+- specular reflection;
+- transmitted background light;
+- refraction;
+- internal reflection;
+- view-dependent illumination effects.
+
+These components vary strongly with viewing direction.
+
+Therefore:
+
+> The left and right cameras may observe different optical paths rather than
+> two projections of the same surface feature.
+
+On glass, stereo matching consequently tends to converge to the **background
+disparity**, not the disparity of the glass surface.
+
+---
+
+### 2. Polarization does not create correspondence
+
+Polarization can alter the ratio of reflected and transmitted light.
+
+It can suppress or enhance particular reflection components.
+
+However, it does **not** create a geometrically corresponding feature at the
+same glass-surface point in both cameras.
+
+The central lesson from PIDS is:
+
+> **A discriminative signal is not necessarily a matchable signal.**
+
+A polarization difference may indicate that transparent material is present,
+while still providing insufficient information to determine stereo disparity.
+
+---
+
+## Correlation-Space Evidence
+
+Representative measurements from the experiments showed:
+
+| Metric | Observed Value | Interpretation |
+|---|---:|---|
+| Peak-to-Mean Ratio | **0.963** | Ground-truth location was not a dominant correlation peak |
+| Peak Sharpness | **Negative** | Response was effectively inverted |
+| `I∥ / I⊥` Ratio | **1.168** | Polarization difference existed, but was too weak / non-localized for correspondence |
+
+The important result was not that polarization produced *no signal*.
+
+It did.
+
+The problem was that the signal produced **no sharp, spatially matchable
+correlation peak** corresponding to the transparent surface.
+
+---
+
+## Why Larger Models Do Not Solve the Problem
+
+The failure was reproduced across several generations of architecture.
+
+The project explored a progression including:
+
+```text
+Baseline RAFT-Stereo
+    ↓
+Dual-Stream architectures
+    ↓
+Polarization Volume V1 / V2-E
+    ↓
+PIDS 2.0 — Two-Pass RGB
+    ↓
+PIDS V3 — Dual Volume + FiLM
+    ↓
+V4 — True Dual-Stream
+    ↓
+V5 — Cost Concatenation
+    ↓
+V6 — Glass-Aware
+    ↓
+PIDS 3.0 / S2M2
+    — Transformer
+    — 6-channel input
+    — ComplexCNNEncoder
 ```
 
-### Server Setup (GPU Workstation)
+Increasing model capacity or changing the fusion strategy did not remove the
+underlying left-right inconsistency.
 
-```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or: venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Download pretrained RAFT-Stereo weights
-bash scripts/download_models.sh
-```
-
-### Client Setup (Raspberry Pi)
-
-```bash
-cd docker_setup
-
-# Build and start container
-docker-compose up -d
-
-# Enter container
-docker exec -it pids_container bash
-```
+This led to the conclusion that the primary limitation was **optical rather
+than architectural**.
 
 ---
 
-## 🚀 Usage
+## Surface Reconstruction Is Not a Complete Escape Route
 
-### Step 1: Radiometric Calibration
+Once stereo correspondence becomes unreliable, the problem effectively shifts
+from:
 
-Before first use, perform sensor calibration to correct for dark current and vignetting:
+> finding corresponding points between two images
+
+to:
+
+> inferring the geometry of the transparent surface from indirect optical cues.
+
+That is a **surface reconstruction** problem.
+
+PIDS identified two major limitations in that direction.
+
+### A. Incomplete reflective-surface coverage
+
+Polarization-based active probing depends strongly on specular reflection.
+
+For a planar glass surface, strong reflection only occurs over particular
+incidence-angle regions.
+
+Therefore the system obtains scattered informative regions rather than complete
+surface coverage.
+
+This prevents direct depth measurement over the entire transparent obstacle.
+
+### B. Surface-normal inference remains underconstrained
+
+Surface reconstruction would typically require reliable surface-normal
+estimation.
+
+A neural network can be trained to infer these normals, but doing so does not
+remove the underlying ambiguity; it transfers the unsolved problem into learned
+shape inference.
+
+This carries a theoretical risk similar to other transparent-object
+reconstruction approaches.
+
+---
+
+## Closure Judgment
+
+After **45+ experiments** spanning three major generations:
+
+1. **RAFT-Stereo based PIDS 1.x**
+2. **Two-Pass RGB / PIDS 2.0**
+3. **S2M2 / PIDS 3.0**
+
+the project concluded that:
+
+> **“polarization + stereo matching” is the wrong formulation for direct
+> transparent-surface depth recovery.**
+
+The failure is rooted primarily in optical principles rather than an isolated
+implementation defect.
+
+Closing the project was therefore considered a valid research outcome rather
+than an unfinished engineering milestone.
+
+---
+
+## What PIDS Did Establish
+
+Although the original depth-recovery objective was unsuccessful, the project
+produced several useful findings.
+
+### Transparent-object stereo
+
+Stereo matching on transparent surfaces frequently estimates the geometry of
+the visible background rather than the transparent interface itself.
+
+### Polarization
+
+Polarization is useful for modifying and analyzing reflection components, but
+does not by itself solve stereo correspondence.
+
+### Deep learning
+
+A sufficiently large neural network cannot reliably recover information that is
+systematically absent or inconsistent in the measurement process.
+
+### Experimental methodology
+
+Negative results are valuable when repeated architecture changes converge on
+the same physical limitation.
+
+---
+
+## Legacy Assets
+
+The repository preserves the engineering and research infrastructure developed
+during PIDS.
+
+### Hardware
+
+- Dual Raspberry Pi Global Shutter Camera system
+- Sony IMX296 sensors
+- Linear polarization system:
+  - illumination: 0°
+  - left camera: 0°
+  - right camera: 90°
+- Camera calibration fixtures
+- Mechanical mounting hardware
+- XVS Master/Slave synchronization circuitry
+
+### Software
+
+- Dark-field radiometric calibration
+- Flat-field calibration
+- Exposure calibration tools
+- Polarization image-processing utilities
+- Stereo capture tools
+- Dataset validation utilities
+- Experimental stereo architectures
+- Training and evaluation scripts
+
+### Synthetic Data Infrastructure
+
+The project also produced multiple generations of polarized synthetic-data
+rendering tools, including:
+
+- Mitsuba 3 polarized rendering scripts;
+- physical-polarizer geometry;
+- parallel optical-axis configurations;
+- textured RGB Stokes rendering;
+- Blender scene randomization;
+- sensor-realism augmentation.
+
+### Data Quality Infrastructure
+
+Datasets were evaluated using a five-point quality process covering:
+
+1. geometric consistency;
+2. background photometric consistency;
+3. polarization-signal validity;
+4. ground-truth alignment;
+5. valid-depth coverage.
+
+---
+
+## Architecture & Training Knowledge
+
+The project produced extensive development documentation covering:
+
+- renderer architecture evolution;
+- depth-network architecture evolution;
+- polarization injection strategies;
+- curriculum sampling;
+- staged freezing and unfreezing;
+- Directional Impulse Descent;
+- sensor-realism augmentation;
+- normalization effects on physical signals;
+- cross-GPU numerical consistency.
+
+One particularly important engineering finding was that normalization methods
+such as:
+
+- BatchNorm;
+- LayerNorm;
+- L2 normalization;
+- per-image percentile normalization
+
+can unintentionally destroy or distort physically meaningful absolute
+radiometric signals.
+
+---
+
+## Hardware Reference
+
+The following hardware was used during the investigation.
+
+| Component | Specification | Qty |
+|---|---|---:|
+| Compute Unit | Raspberry Pi 5, 8 GB | 1 |
+| Camera | Raspberry Pi Global Shutter Camera / Sony IMX296 | 2 |
+| Lens | Identical 6 mm CS-Mount lenses | 2 |
+| Camera Polarizer | Linear polarizing film | 2 |
+| Illumination Polarizer | Linear polarizing film | 1 |
+| Active Light | High-intensity LED panel | 1 |
+| GPU Workstation | NVIDIA CUDA-capable GPU | 1 |
+| Camera Mount | Custom / 3D-printed stereo bracket | 1 |
+
+These specifications are retained for **experimental reproduction and archival
+purposes**. They should not be interpreted as a recommended production system
+for transparent-obstacle depth measurement.
+
+---
+
+## Optical Setup
+
+### Illumination — 0°
+
+Attach a linear polarizer to the active light source.
+
+This defines the reference polarization direction.
+
+### Left Camera — Parallel
+
+Set the left-camera polarizer approximately parallel to the illumination
+polarization.
+
+The reflected component should be relatively strong.
+
+### Right Camera — Cross
+
+Rotate the right-camera polarizer approximately 90° relative to the
+illumination polarization.
+
+The polarized reflected component should be suppressed.
+
+### Synchronization
+
+The two global-shutter cameras should be hardware synchronized.
+
+The experimental system used the IMX296 synchronization interface with a
+Master/Slave XVS configuration.
+
+---
+
+## Radiometric Calibration
+
+Calibration tools are retained because polarization experiments are highly
+sensitive to sensor bias, exposure differences, vignetting, and nonlinear image
+processing.
+
+Example:
 
 ```bash
-# Inside Docker container on Raspberry Pi
 cd /app/codes
 python complex_calibration_tool.py
 ```
 
-Follow the on-screen instructions:
-1. **Dark Field**: Cover lens caps → Capture 30 frames
-2. **Flat Field**: Point at uniform white surface → Capture 30 frames
+The calibration procedure includes:
 
-Output files will be saved to `./output/calibration_data/`:
-- `master_dark_L.npy`, `master_dark_R.npy`
-- `gain_map_L.npy`, `gain_map_R.npy`
+### Dark Field
 
-### Step 2: Run Inference
+Cover the lenses and capture multiple frames to estimate sensor offset and dark
+current.
 
-#### Option A: Local LAN Mode (Real-time, <100ms latency)
+### Flat Field
 
-**Server Side (GPU Workstation):**
-```bash
-python server_local.py --port 8000
-```
+Observe a uniform field to estimate spatial gain and vignetting.
 
-**Client Side (Raspberry Pi):**
-```bash
-python robot_client.py --mode lan --ip "SERVER_IP" --port 8000
-```
+Example outputs:
 
-#### Option B: Cloud Mode (Demo/Testing)
-
-```bash
-# Start ngrok tunnel on server
-ngrok http 8000
-
-# On Raspberry Pi
-python robot_client.py --mode cloud --url "YOUR_NGROK_URL"
-```
-
-### Step 3: Visualization
-
-Access the live stereo stream via web browser:
-```
-http://<raspberry_pi_ip>:5000
+```text
+master_dark_L.npy
+master_dark_R.npy
+gain_map_L.npy
+gain_map_R.npy
 ```
 
 ---
 
-## 📂 Project Structure
+## Repository Structure
 
-```
+```text
 PIDS/
 ├── appendix/
-│   ├── Duo_Cam_Bracket.step      # 3D printable camera mount
+│   ├── Duo_Cam_Bracket.step
 │   └── Schematic_Optical_Path.drawio
+│
 ├── codes/
 │   └── calibration_tools/
 │       ├── calibration_capture_zh-TW.py
 │       ├── complex_calibration_tool.py
 │       └── exposure_calibrate_tool_zh-TW.py
+│
 ├── docker_setup/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   └── codes/
 │       ├── complex_calibration_tool.py
 │       └── web_stream.py
-├── models/                        # Pretrained weights (download separately)
+│
+├── models/
 ├── scripts/
-│   └── download_models.sh
-├── assets/                        # Images for documentation
+├── assets/
 ├── LICENSE
 ├── README.md
 └── requirements.txt
 ```
 
+> The exact contents of the repository may evolve as legacy material is
+> organized and released.
+
 ---
 
-## 🧪 Training
+## Reproduction / Historical Experiments
 
-### Two-Stage Fine-Tuning Strategy
+Some training scripts and checkpoints may be retained to reproduce historical
+PIDS experiments.
 
+They are provided for **research and archival purposes**, not as a validated
+transparent-depth solution.
 
-#### Stage I: Synthetic Pre-training
+Example historical workflow:
+
 ```bash
 python train.py \
-    --stage 1 \
     --data_path ./data/synthetic \
     --batch_size 8 \
     --num_steps 100000 \
     --lr 0.0001
 ```
 
-#### Stage II: Real-World Fine-tuning
-```bash
-python train.py \
-    --stage 2 \
-    --data_path ./data/real_world \
-    --checkpoint checkpoints/stage1_best.pth \
-    --batch_size 4 \
-    --num_steps 5000 \
-    --lr 0.00001
-```
-
-### Data Quality Criteria
-
-Training data must pass 5 quality filters:
-1. ✅ Geometric consistency (vertical disparity < 1px)
-2. ✅ Background photometric consistency (|I∥ - I⊥| ≈ 0)
-3. ✅ Polarization signal validity (I∥ > I⊥ on transparent surfaces)
-4. ✅ Ground truth alignment (< 1px displacement)
-5. ✅ Depth validity rate (> 90% valid pixels in ROI)
-
----
-
-## 📊 Evaluation
+Evaluation:
 
 ```bash
 python evaluate.py \
@@ -242,55 +523,138 @@ python evaluate.py \
     --metrics EPE RMSE
 ```
 
-### Metrics
-
-| Metric | Description |
-|--------|-------------|
-| **EPE** | End-Point Error - Average absolute disparity difference (pixels) |
-| **RMSE** | Root Mean Squared Error - Sensitive to large deviations |
+The meaning of these metrics must be interpreted carefully: good stereo
+performance on opaque/background regions does not imply correct recovery of the
+transparent surface itself.
 
 ---
 
+## Research Lessons
 
+PIDS produced several broader lessons that may be useful for future
+physics-informed vision research.
 
+### 1. Verify observability before scaling the network
 
-## 📜 License
+Before increasing model complexity, determine whether the desired physical
+quantity is actually represented in the sensor measurements.
 
-This project is released under the [MIT License](LICENSE).
+### 2. Detection and depth recovery are different problems
 
-**Attribution Requirement**: If you use this code, hardware design, or derivative works in academic publications or commercial products, you must cite the paper above and attribute the original authorship.
+A cue may reveal that glass exists without specifying where the glass surface
+lies in 3D.
 
----
+### 3. Photometric asymmetry can hurt correspondence
 
-## 🙏 Acknowledgments
+A cue intentionally introduced to make an object more visible may
+simultaneously violate the assumptions required by stereo matching.
 
-- [RAFT-Stereo](https://github.com/princeton-vl/RAFT-Stereo) - Base stereo matching architecture
-- [Picamera2](https://github.com/raspberrypi/picamera2) - Raspberry Pi camera interface
-- The open-source robotics community
+### 4. Physical signals should be preserved
 
----
+Image normalization and learned feature normalization can destroy meaningful
+radiometric relationships.
 
-## 📮 Contact
+### 5. Negative results should be documented
 
-For questions or collaboration inquiries:
-
-- **Author**: Po-Ting Lin
-- **Email**: [botimlinlin@gmail.com]
-- **WebSite**: potinglin.org
-- **Issues**: Please use [GitHub Issues](https://github.com/your-username/PIDS/issues)
-
----
-
-## 🗺️ Roadmap
-
-- [ ] Release full dataset upon paper acceptance
-- [ ] Add ROS2 integration
-- [ ] Support for additional stereo backbones (PSMNet, AANet)
-- [ ] Web-based calibration GUI
-- [ ] Multi-camera array support
+Demonstrating that a plausible approach fails for fundamental reasons prevents
+future work from repeatedly paying the same experimental cost.
 
 ---
 
-<p align="center">
-  <b>⭐ If you find this project useful, please consider giving it a star! ⭐</b>
-</p>
+## Future Directions
+
+PIDS itself is concluded.
+
+Possible future research directions should reformulate the measurement problem
+rather than simply enlarge the stereo model.
+
+Potential directions include:
+
+- transparent-object **detection** rather than direct stereo depth;
+- active structured optical measurements;
+- multi-view observations;
+- controlled illumination over multiple angles;
+- temporal measurements;
+- polarization as an auxiliary material cue;
+- sensor fusion with non-RGB modalities;
+- reconstruction methods based on explicit optical models.
+
+These directions are **not claims of solved approaches**; they are possible
+research questions motivated by the limitations observed in PIDS.
+
+---
+
+## Project Timeline
+
+```text
+Late 2025
+│
+├── Initial polarized stereo hypothesis
+├── RAFT-Stereo / PIDS 1.x
+├── Polarization-volume experiments
+├── Renderer and calibration development
+│
+├── PIDS 2.0
+│   └── Two-Pass RGB experiments
+│
+├── Advanced dual-stream / fusion architectures
+│
+├── PIDS 3.0 / S2M2
+│   ├── Transformer experiments
+│   ├── 6-channel representations
+│   └── ComplexCNNEncoder
+│
+└── 2026-02-26
+    Research project concluded
+```
+
+---
+
+## License
+
+This repository is released under the [MIT License](LICENSE).
+
+If you use or discuss this project in academic work, please cite or otherwise
+reference the project and its author where appropriate.
+
+---
+
+## Acknowledgments
+
+This work builds on and benefited from open-source research and engineering
+projects including:
+
+- [RAFT-Stereo](https://github.com/princeton-vl/RAFT-Stereo)
+- [Picamera2](https://github.com/raspberrypi/picamera2)
+- [Mitsuba 3](https://mitsuba-renderer.org/)
+- the open-source robotics and computer-vision communities
+
+---
+
+## Contact
+
+**Po-Ting Lin**
+
+- Website: [potinglin.org](https://potinglin.org)
+- Email: botimlinlin@gmail.com
+- GitHub Issues: use the issue tracker associated with this repository
+
+---
+
+## Final Note
+
+PIDS did not produce the transparent-surface depth sensor originally envisioned.
+
+It produced something different:
+
+**experimental evidence identifying why a plausible physics-informed stereo
+approach does not work.**
+
+The central conclusion is:
+
+> Transparent-object depth cannot be recovered reliably by assuming that
+> polarization will restore conventional left-right stereo correspondence.
+> Transparent surfaces remain strongly view-dependent, while asymmetric
+> polarization introduces additional photometric inconsistency.
+
+Knowing where a path ends is also a research result.
